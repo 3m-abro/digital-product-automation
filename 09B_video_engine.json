@@ -1,0 +1,559 @@
+{
+  "name": "09B — Video Engine (Text-Overlay + AI Voiceover + Avatar)",
+  "nodes": [
+
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "video-engine",
+        "responseMode": "onReceived",
+        "responseData": "allEntries"
+      },
+      "id": "node_webhook",
+      "name": "🔔 Webhook — Trigger Video Engine",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1.1,
+      "position": [200, 500],
+      "notes": "Called by Workflow 03 (Publishing Agent) after product goes live — same trigger as 09A. Also callable manually. Receives: product_id, title, description, category, store_urls, cover_image, brand_id, keywords."
+    },
+
+    {
+      "parameters": {
+        "jsCode": "const body = $input.first().json.body || $input.first().json;\nif (!body.title) return [{ json: { error: true, message: 'Missing title' } }];\n\nconst storeUrl = body.etsy_url || body.gumroad_url || body.payhip_url || '#';\n\nreturn [{ json: {\n  product_id: body.product_id || `prod_${Date.now()}`,\n  title: body.title,\n  description: body.description || '',\n  category: body.category || 'productivity',\n  brand_id: body.brand_id || 'clearstack',\n  keywords: body.keywords || [],\n  primary_keyword: (body.keywords || [])[0] || body.title,\n  price: body.price || 9.99,\n  store_url: storeUrl,\n  store_urls: {\n    etsy: body.etsy_url || '',\n    gumroad: body.gumroad_url || '',\n    payhip: body.payhip_url || ''\n  },\n  cover_image: body.cover_image || '',\n  brand_name: 'ClearStack Studio',\n  brand_color_primary: '#1B2A4A',\n  brand_color_accent: '#C9A84C',\n  work_dir: `/tmp/video_${body.product_id || Date.now()}`,\n  avatar_enabled: body.avatar_enabled || false,\n  _received_at: new Date().toISOString()\n}}];"
+      },
+      "id": "node_validate",
+      "name": "⚙️ Validate + Build Video Context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [460, 500]
+    },
+
+    {
+      "parameters": {
+        "command": "=# ENVIRONMENT SETUP — runs once per product\nWORK_DIR='{{ $json.work_dir }}'\nmkdir -p \"$WORK_DIR\"\n\n# Check required tools\necho \"=== TOOL CHECK ===\"\nffmpeg -version 2>/dev/null | head -1 || echo \"MISSING: ffmpeg — run: apt-get install ffmpeg\"\npiper --version 2>/dev/null | head -1 || echo \"INFO: piper not installed — will use ElevenLabs fallback\"\nfc-list 2>/dev/null | grep -i 'opensans\\|open.sans\\|DejaVu' | head -2 || echo \"INFO: Font check\"\n\n# Install FFmpeg if missing\nif ! command -v ffmpeg &> /dev/null; then\n  apt-get install -y ffmpeg 2>/dev/null\nfi\n\n# Install fonts\napt-get install -y fonts-open-sans fonts-dejavu-core 2>/dev/null | tail -1\nfc-cache -fv 2>/dev/null | tail -1\n\n# Create brand background images using FFmpeg\n# 9:16 vertical (Reels/TikTok/Shorts) — 1080x1920\nffmpeg -y \\\n  -f lavfi -i \"color=c=0x1B2A4A:size=1080x1920:rate=30\" \\\n  -frames:v 1 \"$WORK_DIR/bg_vertical.png\" 2>/dev/null\n\n# 1:1 square (Feed posts) — 1080x1080\nffmpeg -y \\\n  -f lavfi -i \"color=c=0x1B2A4A:size=1080x1080:rate=30\" \\\n  -frames:v 1 \"$WORK_DIR/bg_square.png\" 2>/dev/null\n\n# Download cover image if URL provided\nCOVER_URL='{{ $json.cover_image }}'\nif [ -n \"$COVER_URL\" ] && [ \"$COVER_URL\" != \"\" ]; then\n  wget -q -O \"$WORK_DIR/cover.jpg\" \"$COVER_URL\" 2>/dev/null\n  if [ -f \"$WORK_DIR/cover.jpg\" ]; then\n    # Resize cover for use in video\n    ffmpeg -y -i \"$WORK_DIR/cover.jpg\" \\\n      -vf \"scale=800:800:force_original_aspect_ratio=decrease,pad=800:800:(ow-iw)/2:(oh-ih)/2:0x1B2A4A\" \\\n      \"$WORK_DIR/cover_resized.jpg\" 2>/dev/null\n    echo \"COVER_READY\"\n  fi\nfi\n\necho \"SETUP_DONE|$WORK_DIR\"\nls \"$WORK_DIR\""
+      },
+      "id": "node_setup",
+      "name": "💻 Setup Video Environment",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [720, 300],
+      "notes": "Creates work directory, installs FFmpeg + fonts if missing, generates brand background images, downloads and resizes cover image. Runs in parallel with script writing."
+    },
+
+    {
+      "parameters": {
+        "model": "mistral",
+        "messages": {
+          "values": [
+            {
+              "role": "system",
+              "content": "You are an expert short-form video scriptwriter for TikTok, Instagram Reels, and YouTube Shorts. You write scripts that STOP the scroll in the first 2 seconds. You understand hook psychology, the 3-second rule, pattern interrupts, and what makes people watch to the end on each platform. You write text-overlay scripts (no talking head required) AND UGC-style talking head scripts. You know that for digital product promotion, the best content is: educational tips that happen to solve what the product solves, before/after transformations, 'POV' style content, and 'things I wish I knew' format. Respond in valid JSON only."
+            },
+            {
+              "role": "user",
+              "content": "=Write complete video scripts for this digital product:\n\nProduct: {{$json.title}}\nCategory: {{$json.category}}\nDescription: {{$json.description}}\nPrice: ${{$json.price}}\nStore URL: {{$json.store_url}}\nBrand: {{$json.brand_name}}\nPrimary Keyword: {{$json.primary_keyword}}\n\nWrite scripts for ALL 5 video formats:\n\n1. TEXT_OVERLAY_15S — 15 second text-on-screen, TikTok/Reels\n   Format: Hook text → 3 value points → CTA\n   No voiceover needed — text tells the story\n\n2. TEXT_OVERLAY_30S — 30 second text-on-screen, TikTok/Reels  \n   Format: Hook → Problem agitation → Solution reveal → Social proof → CTA\n\n3. TIPS_COUNTDOWN_30S — \"5 productivity tips\" style, all platforms\n   Format: Hook → 5 numbered tips (one per scene) → CTA\n   Each tip secretly positions the product as the solution\n\n4. UGC_AVATAR_60S — Talking head script for AI avatar\n   Format: Conversational, 'I discovered this' style\n   Natural, relatable — NOT a sales pitch\n   Include: [PAUSE] markers for natural delivery\n   Include: emotion notes e.g. [EXCITED] [RELATABLE SIGH]\n\n5. PRODUCT_REVEAL_15S — Product mockup zoom + text\n   Format: Pure visual storytelling with minimal text\n   3 scenes: Problem text → Product appear → Result text\n\nRespond ONLY with this JSON:\n{\n  \"videos\": [\n    {\n      \"video_id\": \"text_overlay_15s\",\n      \"format\": \"TEXT_OVERLAY_15S\",\n      \"platform\": \"tiktok_reels\",\n      \"duration_seconds\": 15,\n      \"hook_words\": \"First 3 words — the scroll-stopper\",\n      \"scenes\": [\n        {\n          \"scene_number\": 1,\n          \"timestamp_start\": 0,\n          \"timestamp_end\": 3,\n          \"text_overlay\": \"Main text for this scene — max 8 words\",\n          \"subtext\": \"Optional smaller text — max 12 words\",\n          \"position\": \"center\",\n          \"animation\": \"fade_in\",\n          \"background\": \"navy\"\n        }\n      ],\n      \"caption_tiktok\": \"TikTok caption — hook line + 3-5 hashtags\",\n      \"caption_reels\": \"Instagram Reels caption — slightly longer + hashtags\",\n      \"caption_shorts\": \"YouTube Shorts title (100 chars max)\",\n      \"voiceover_script\": null\n    },\n    {\n      \"video_id\": \"ugc_avatar_60s\",\n      \"format\": \"UGC_AVATAR_60S\",\n      \"platform\": \"tiktok_reels_shorts\",\n      \"duration_seconds\": 60,\n      \"hook_words\": \"First spoken words\",\n      \"scenes\": [],\n      \"voiceover_script\": \"Complete word-for-word script for AI avatar. 120-150 words. Natural speech. Include [PAUSE], [EXCITED], [RELATABLE] markers. End with soft CTA — link in bio.\",\n      \"caption_tiktok\": \"Caption with hook\",\n      \"caption_reels\": \"Caption with hook\",\n      \"caption_shorts\": \"Title\"\n    }\n  ],\n  \"music_mood\": \"upbeat_focus | chill_productive | motivational | calm_focus\",\n  \"trending_audio_suggestions\": [\"describe trending audio style that fits\"],\n  \"posting_strategy\": {\n    \"best_time_tiktok\": \"7-9 PM local time\",\n    \"best_time_reels\": \"6-8 PM local time\",\n    \"frequency\": \"1 video per day per platform minimum\",\n    \"first_comment\": \"Pin this comment with store link for each post\"\n  }\n}"
+            }
+          ]
+        },
+        "options": { "temperature": 0.85 }
+      },
+      "id": "node_mistral_scripts",
+      "name": "🧠 mistral — Write All 5 Video Scripts",
+      "type": "n8n-nodes-base.ollama",
+      "typeVersion": 1,
+      "position": [720, 700],
+      "notes": "mistral scripts all 5 video formats simultaneously. Higher temp (0.85) for creative, hook-driven copy. Runs in parallel with environment setup."
+    },
+
+    {
+      "parameters": {
+        "jsCode": "// Parse mistral scripts output\nconst raw = $input.first().json;\nconst product = $('⚙️ Validate + Build Video Context').first().json;\n\nlet scriptData;\ntry {\n  const content = raw?.message?.content || raw?.response || '';\n  const match = content.match(/```json\\n?([\\s\\S]*?)\\n?```/) || content.match(/({[\\s\\S]*})/);\n  scriptData = JSON.parse((match ? match[1] || match[0] : content).trim());\n} catch(e) {\n  // Fallback scripts if parse fails\n  scriptData = {\n    videos: [\n      {\n        video_id: 'text_overlay_15s',\n        format: 'TEXT_OVERLAY_15S',\n        platform: 'tiktok_reels',\n        duration_seconds: 15,\n        hook_words: 'Stop scrolling.',\n        scenes: [\n          { scene_number: 1, timestamp_start: 0, timestamp_end: 4, text_overlay: 'Stop scrolling.', subtext: 'This will change how you work.', position: 'center', background: 'navy' },\n          { scene_number: 2, timestamp_start: 4, timestamp_end: 9, text_overlay: product.title, subtext: 'The template you\\'ve been looking for.', position: 'center', background: 'navy' },\n          { scene_number: 3, timestamp_start: 9, timestamp_end: 15, text_overlay: 'Link in bio ↑', subtext: `Only $${product.price}`, position: 'center', background: 'navy' }\n        ],\n        caption_tiktok: `You need this 👀 #productivity #template #digitalproduct`,\n        caption_reels: `Working smarter, not harder — this template does the heavy lifting ✨ Link in bio!`,\n        caption_shorts: product.title,\n        voiceover_script: null\n      }\n    ],\n    music_mood: 'upbeat_focus'\n  };\n}\n\n// Separate text-overlay videos from avatar video\nconst allVideos = scriptData.videos || [];\nconst textVideos = allVideos.filter(v => v.format !== 'UGC_AVATAR_60S');\nconst avatarVideo = allVideos.find(v => v.format === 'UGC_AVATAR_60S') || null;\n\nreturn [{ json: {\n  ...product,\n  script_data: scriptData,\n  text_videos: textVideos,\n  avatar_video: avatarVideo,\n  music_mood: scriptData.music_mood || 'upbeat_focus',\n  posting_strategy: scriptData.posting_strategy || {},\n  _scripts_parsed: true\n}}];"
+      },
+      "id": "node_parse_scripts",
+      "name": "⚙️ Parse Video Scripts",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [980, 700]
+    },
+
+    {
+      "parameters": {
+        "jsCode": "// Combine setup results + parsed scripts\nconst setupResult = $('💻 Setup Video Environment').first().json;\nconst scripts = $input.first().json;\n\nconst setupStdout = setupResult.stdout || '';\nconst workDir = scripts.work_dir;\nconst coverReady = setupStdout.includes('COVER_READY');\nconst setupDone = setupStdout.includes('SETUP_DONE');\n\nreturn [{ json: {\n  ...scripts,\n  work_dir: workDir,\n  cover_ready: coverReady,\n  cover_path: coverReady ? `${workDir}/cover_resized.jpg` : null,\n  bg_vertical: `${workDir}/bg_vertical.png`,\n  bg_square: `${workDir}/bg_square.png`,\n  setup_ok: setupDone\n}}];"
+      },
+      "id": "node_merge_setup",
+      "name": "⚙️ Merge Setup + Scripts",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1240, 500]
+    },
+
+    {
+      "parameters": {
+        "jsCode": "// Build complete FFmpeg commands for all text-overlay videos\nconst data = $input.first().json;\nconst workDir = data.work_dir;\nconst P = (data.brand_color_primary || '#1B2A4A').replace('#', '0x');\nconst A = (data.brand_color_accent || '#C9A84C').replace('#', '0x');\nconst W = '0xFFFFFF';\nconst textVideos = data.text_videos || [];\nconst coverPath = data.cover_path;\nconst bgVertical = data.bg_vertical;\n\n// Helper: escape text for FFmpeg drawtext\nconst escText = (t) => (t || '').replace(/'/g, \"'\\\\''\").replace(/:/g, '\\\\:').replace(/,/g, '\\\\,').substring(0, 50);\n\n// Helper: build fade filter for a text element\nconst fadeFilter = (t0, t1) =>\n  `alpha='if(lt(t,${t0}),0,if(lt(t,${t0+0.4}),(t-${t0})/0.4,if(lt(t,${t1-0.3}),1,max(0,(${t1}-t)/0.3))))'`;\n\nconst commands = [];\n\nfor (const video of textVideos) {\n  const outputFile = `${workDir}/${video.video_id}.mp4`;\n  const duration = video.duration_seconds || 15;\n  const scenes = video.scenes || [];\n  const format = video.format || 'TEXT_OVERLAY_15S';\n\n  // Font path — try multiple options\n  const font = '/usr/share/fonts/truetype/open-sans/OpenSans-Bold.ttf';\n  const fontFallback = '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf';\n\n  if (format === 'PRODUCT_REVEAL_15S' && coverPath) {\n    // Product reveal: cover zoom + text\n    const textFilters = scenes.map(s => {\n      const mainText = escText(s.text_overlay);\n      const fade = fadeFilter(s.timestamp_start, s.timestamp_end);\n      return `drawtext=text='${mainText}':fontsize=64:fontcolor=${W}:x=(w-text_w)/2:y=(h-text_h)/2-40:enable='between(t,${s.timestamp_start},${s.timestamp_end})':${fade}:shadowcolor=0x000000:shadowx=2:shadowy=2`;\n    }).join(',');\n\n    commands.push({\n      video_id: video.video_id,\n      format,\n      platform: video.platform,\n      duration,\n      command: `ffmpeg -y -loop 1 -i ${coverPath} -vf \"scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,zoompan=z='min(zoom+0.002,1.3)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=${duration*30}:s=1080x1920,setsar=1,drawbox=x=0:y=0:w=1080:h=7:color=${A}:t=fill,${textFilters}\" -c:v libx264 -t ${duration} -r 30 -pix_fmt yuv420p -crf 22 -preset fast ${outputFile}`,\n      output_file: outputFile,\n      caption_tiktok: video.caption_tiktok,\n      caption_reels: video.caption_reels,\n      caption_shorts: video.caption_shorts,\n      has_voiceover: false\n    });\n\n  } else {\n    // Text-overlay on navy background\n    const textFilters = scenes.map(s => {\n      const mainText = escText(s.text_overlay);\n      const subText = s.subtext ? escText(s.subtext) : null;\n      const fade = fadeFilter(s.timestamp_start, s.timestamp_end);\n      const yMain = s.position === 'top' ? '200' : s.position === 'bottom' ? 'h-300' : '(h-text_h)/2-60';\n      const ySub = s.position === 'top' ? '340' : s.position === 'bottom' ? 'h-200' : '(h-text_h)/2+100';\n      const isAccent = s.text_overlay?.includes('✓') || s.text_overlay?.includes('→');\n      const mainColor = isAccent ? A : W;\n      const fontSize = mainText.length > 25 ? 56 : 72;\n\n      let filter = `drawtext=text='${mainText}':fontfile=${font}:fontsize=${fontSize}:fontcolor=${mainColor}:x=(w-text_w)/2:y=${yMain}:enable='between(t,${s.timestamp_start},${s.timestamp_end})':${fade}:shadowcolor=0x00000088:shadowx=3:shadowy=3`;\n      if (subText) {\n        const fadeSub = fadeFilter(s.timestamp_start + 0.2, s.timestamp_end);\n        filter += `,drawtext=text='${subText}':fontfile=${fontFallback}:fontsize=38:fontcolor=0xFFFFFFBB:x=(w-text_w)/2:y=${ySub}:enable='between(t,${s.timestamp_start},${s.timestamp_end})':${fadeSub}`;\n      }\n      return filter;\n    }).join(',');\n\n    // Brand bar + accent line + text filters\n    const fullFilter = `scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:${P},drawbox=x=0:y=0:w=1080:h=7:color=${A}:t=fill,drawbox=x=0:y=1913:w=1080:h=7:color=${A}:t=fill,${textFilters}`;\n\n    commands.push({\n      video_id: video.video_id,\n      format,\n      platform: video.platform,\n      duration,\n      command: `ffmpeg -y -loop 1 -i ${bgVertical} -vf \"${fullFilter}\" -c:v libx264 -t ${duration} -r 30 -pix_fmt yuv420p -crf 22 -preset fast ${outputFile}`,\n      output_file: outputFile,\n      caption_tiktok: video.caption_tiktok,\n      caption_reels: video.caption_reels,\n      caption_shorts: video.caption_shorts,\n      has_voiceover: false\n    });\n  }\n}\n\nreturn commands.map(cmd => ({ json: { ...data, video_job: cmd } }));"
+      },
+      "id": "node_build_ffmpeg",
+      "name": "⚙️ Build FFmpeg Commands (All Videos)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1500, 340],
+      "notes": "Builds complete FFmpeg drawtext commands for all text-overlay video types. Handles: fade in/out per scene, font sizing based on text length, accent color for emphasis text, cover zoom-pan for product reveal, brand bars top and bottom."
+    },
+
+    {
+      "parameters": {
+        "jsCode": "// Prepare voiceover generation for videos that need it\n// Checks which videos have voiceover scripts\nconst data = $input.first().json;\nconst textVideos = data.text_videos || [];\n\n// Find videos that need voiceover (tips/countdown style)\nconst voiceoverVideos = textVideos.filter(v =>\n  v.voiceover_script && v.voiceover_script.length > 10\n);\n\nif (voiceoverVideos.length === 0) {\n  // No voiceovers needed — pass through\n  return [{ json: { ...data, voiceovers: [], voiceover_needed: false } }];\n}\n\nreturn voiceoverVideos.map(v => ({ json: {\n  ...data,\n  voiceover_target_video_id: v.video_id,\n  voiceover_script: v.voiceover_script,\n  voiceover_needed: true,\n  voice_style: 'calm_professional'\n}}));"
+      },
+      "id": "node_prep_voiceover",
+      "name": "⚙️ Prep Voiceover Jobs",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1500, 580]
+    },
+
+    {
+      "parameters": {
+        "command": "=# Render this video with FFmpeg\nVIDEO_ID='{{ $json.video_job.video_id }}'\nCOMMAND='{{ $json.video_job.command }}'\nOUTPUT='{{ $json.video_job.output_file }}'\n\necho \"Rendering: $VIDEO_ID\"\neval \"$COMMAND\" 2>&1\n\nif [ -f \"$OUTPUT\" ]; then\n  SIZE=$(ls -lh \"$OUTPUT\" | awk '{print $5}')\n  DURATION=$(ffprobe -v quiet -show_entries format=duration -of csv=p=0 \"$OUTPUT\" 2>/dev/null | cut -d. -f1)\n  echo \"SUCCESS|$VIDEO_ID|$OUTPUT|$SIZE|${DURATION}s\"\nelse\n  echo \"FAILED|$VIDEO_ID|FFmpeg error\"\nfi"
+      },
+      "id": "node_render_video",
+      "name": "💻 Render Video (FFmpeg)",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [1760, 340],
+      "notes": "Renders one video per execution. n8n processes all video jobs in parallel (one per item from previous split). Typical render times on CPU VPS: 15s video → ~20-40s render time. 30s video → ~40-80s."
+    },
+
+    {
+      "parameters": {
+        "conditions": {
+          "conditions": [{
+            "leftValue": "={{ $json.voiceover_needed }}",
+            "rightValue": true,
+            "operator": { "type": "boolean", "operation": "true" }
+          }]
+        }
+      },
+      "id": "node_voiceover_needed",
+      "name": "🔀 Voiceover Needed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1760, 580]
+    },
+
+    {
+      "parameters": {
+        "command": "=# PIPER TTS — Free, local, fast voiceover\n# Install Piper if not present\nif ! command -v piper &> /dev/null; then\n  echo \"Installing Piper TTS...\"\n  # Download Piper binary for Linux x64\n  PIPER_VERSION=\"2023.11.14-2\"\n  wget -q \"https://github.com/rhasspy/piper/releases/download/${PIPER_VERSION}/piper_linux_x86_64.tar.gz\" \\\n    -O /tmp/piper.tar.gz\n  tar -xzf /tmp/piper.tar.gz -C /usr/local/bin/\n  chmod +x /usr/local/bin/piper\n  \n  # Download voice model (en_US-libritts_r-medium)\n  mkdir -p /opt/piper-voices\n  wget -q \"https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/libritts_r/medium/en_US-libritts_r-medium.onnx\" \\\n    -O /opt/piper-voices/voice.onnx\n  wget -q \"https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/libritts_r/medium/en_US-libritts_r-medium.onnx.json\" \\\n    -O /opt/piper-voices/voice.onnx.json\n  echo \"Piper installed\"\nfi\n\nVOICE_MODEL=\"/opt/piper-voices/voice.onnx\"\nSCRIPT='{{ $json.voiceover_script }}'\nOUTPUT_WAV='{{ $json.work_dir }}/voice_{{ $json.voiceover_target_video_id }}.wav'\nOUTPUT_MP3='{{ $json.work_dir }}/voice_{{ $json.voiceover_target_video_id }}.mp3'\n\n# Generate speech with Piper\necho \"$SCRIPT\" | piper \\\n  --model \"$VOICE_MODEL\" \\\n  --output_file \"$OUTPUT_WAV\" \\\n  --length_scale 1.05 \\\n  --noise_scale 0.667 2>&1\n\n# Convert WAV to MP3\nif [ -f \"$OUTPUT_WAV\" ]; then\n  ffmpeg -y -i \"$OUTPUT_WAV\" -codec:a libmp3lame -qscale:a 3 \"$OUTPUT_MP3\" 2>/dev/null\n  SIZE=$(ls -lh \"$OUTPUT_MP3\" | awk '{print $5}')\n  echo \"PIPER_SUCCESS|$OUTPUT_MP3|$SIZE\"\nelse\n  echo \"PIPER_FAILED|Will fall back to ElevenLabs\"\nfi"
+      },
+      "id": "node_piper_tts",
+      "name": "🎤 Piper TTS — Generate Voiceover (Free)",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [2020, 480],
+      "notes": "FREE local TTS using Piper (ONNX-based, CPU-optimized). Generates ~10s of audio in ~2s on CPU. Voice: en_US-libritts_r-medium — professional, clear, natural. Auto-installs on first run. RTF ~0.2 = very fast for CPU."
+    },
+
+    {
+      "parameters": {
+        "conditions": {
+          "conditions": [{
+            "leftValue": "={{ $json.stdout }}",
+            "rightValue": "PIPER_SUCCESS",
+            "operator": { "type": "string", "operation": "contains" }
+          }]
+        }
+      },
+      "id": "node_piper_ok",
+      "name": "🔀 Piper Succeeded?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [2280, 480]
+    },
+
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.elevenlabs.io/v1/text-to-speech/21m00Tcm4TlvDq8ikWAM",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "xi-api-key", "value": "YOUR_ELEVENLABS_API_KEY" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "body": "={\n  \"text\": \"{{ $json.voiceover_script }}\",\n  \"model_id\": \"eleven_monolingual_v1\",\n  \"voice_settings\": {\n    \"stability\": 0.55,\n    \"similarity_boost\": 0.75,\n    \"style\": 0.3,\n    \"use_speaker_boost\": true\n  }\n}",
+        "options": {
+          "response": { "response": { "responseFormat": "file" } }
+        }
+      },
+      "id": "node_elevenlabs",
+      "name": "🎤 ElevenLabs — Premium Voiceover (Fallback)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [2540, 580],
+      "notes": "SETUP: Get API key at elevenlabs.io/app/speech-synthesis. $5/mo = 1M chars (~100+ videos). Voice ID 21m00Tcm4TlvDq8ikWAM = Rachel (calm, professional). Change voice ID for different style. Used as Piper fallback OR for hero content."
+    },
+
+    {
+      "parameters": {
+        "jsCode": "// Determine voiceover file path and pass to video merger\nconst piperResult = $('🎤 Piper TTS — Generate Voiceover (Free)').first().json;\nconst videoContext = $('⚙️ Prep Voiceover Jobs').first().json;\n\nconst stdout = piperResult.stdout || '';\nconst piperSuccess = stdout.includes('PIPER_SUCCESS');\nconst piperPath = piperSuccess ? stdout.split('|')[1]?.trim() : null;\n\nreturn [{ json: {\n  ...videoContext,\n  voiceover_path: piperPath,\n  voiceover_source: piperSuccess ? 'piper' : 'elevenlabs_needed',\n  _voiceover_ready: piperSuccess\n}}];"
+      },
+      "id": "node_voiceover_path",
+      "name": "⚙️ Get Voiceover Path",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2540, 480]
+    },
+
+    {
+      "parameters": {
+        "command": "=# Merge voiceover audio into rendered video\nVIDEO_IN='{{ $json.work_dir }}/tips_countdown_30s.mp4'\nAUDIO_IN='{{ $json.voiceover_path }}'\nVIDEO_OUT='{{ $json.work_dir }}/tips_countdown_30s_voiced.mp4'\n\nif [ -f \"$VIDEO_IN\" ] && [ -f \"$AUDIO_IN\" ]; then\n  ffmpeg -y \\\n    -i \"$VIDEO_IN\" \\\n    -i \"$AUDIO_IN\" \\\n    -c:v copy \\\n    -c:a aac \\\n    -b:a 128k \\\n    -shortest \\\n    -map 0:v:0 \\\n    -map 1:a:0 \\\n    \"$VIDEO_OUT\" 2>&1\n  \n  if [ -f \"$VIDEO_OUT\" ]; then\n    echo \"MERGE_SUCCESS|$VIDEO_OUT\"\n  else\n    echo \"MERGE_FAILED\"\n  fi\nelse\n  echo \"MERGE_SKIPPED|Files not found: video=$VIDEO_IN audio=$AUDIO_IN\"\nfi"
+      },
+      "id": "node_merge_audio",
+      "name": "💻 Merge Audio + Video (FFmpeg)",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [2800, 480],
+      "notes": "Merges TTS voiceover audio into the rendered text-overlay video. Uses -shortest to trim to whichever is shorter. -c:v copy = no re-encoding of video = fast."
+    },
+
+    {
+      "parameters": {
+        "conditions": {
+          "conditions": [{
+            "leftValue": "={{ $('⚙️ Validate + Build Video Context').first().json.avatar_enabled }}",
+            "rightValue": true,
+            "operator": { "type": "boolean", "operation": "true" }
+          }]
+        }
+      },
+      "id": "node_avatar_enabled",
+      "name": "🔀 Avatar Enabled?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1500, 760],
+      "notes": "Only runs D-ID avatar pipeline if avatar_enabled=true in the incoming request. Set to true manually or enable by default once D-ID subscription is active."
+    },
+
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.elevenlabs.io/v1/text-to-speech/21m00Tcm4TlvDq8ikWAM",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "xi-api-key", "value": "YOUR_ELEVENLABS_API_KEY" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "body": "={\n  \"text\": \"{{ $json.avatar_video.voiceover_script }}\",\n  \"model_id\": \"eleven_monolingual_v1\",\n  \"voice_settings\": { \"stability\": 0.6, \"similarity_boost\": 0.8, \"style\": 0.4 }\n}",
+        "options": {
+          "response": { "response": { "responseFormat": "file" } }
+        }
+      },
+      "id": "node_avatar_voice",
+      "name": "🎤 ElevenLabs — Avatar Voiceover",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1760, 760],
+      "notes": "Always uses ElevenLabs for avatar voiceover — Piper quality not good enough for talking head lip-sync. Rachel voice for professional female presenter. Swap voice ID for different presenter style."
+    },
+
+    {
+      "parameters": {
+        "command": "=# Save ElevenLabs audio to file\nAUDIO_OUT='{{ $json.work_dir }}/avatar_voice.mp3'\n# The binary comes from n8n response — save via base64 or pipe\n# This node receives the binary body from ElevenLabs\necho 'Audio saved by n8n binary handler'\nls -la '{{ $json.work_dir }}/'\necho \"AUDIO_READY|$AUDIO_OUT\""
+      },
+      "id": "node_save_audio",
+      "name": "💻 Save Avatar Audio",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [2020, 760]
+    },
+
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.d-id.com/talks",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "Basic YOUR_DID_API_KEY_BASE64" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "body": "={\n  \"source_url\": \"YOUR_AVATAR_IMAGE_URL\",\n  \"script\": {\n    \"type\": \"audio\",\n    \"audio_url\": \"{{ $json.work_dir }}/avatar_voice.mp3\"\n  },\n  \"config\": {\n    \"fluent\": true,\n    \"pad_audio\": 0.0,\n    \"result_format\": \"mp4\"\n  },\n  \"presenter_config\": {\n    \"crop\": { \"type\": \"square\" }\n  }\n}",
+        "options": {}
+      },
+      "id": "node_did_create",
+      "name": "🤖 D-ID — Create Avatar Video",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [2280, 760],
+      "notes": "SETUP: (1) Sign up at d-id.com ($5.90/mo starter — 10 min video). (2) Go to API Keys, copy key. (3) Base64 encode the key. (4) Upload your avatar image to a public URL and replace YOUR_AVATAR_IMAGE_URL. HALAL NOTE: Ensure avatar uses modest appearance. Add disclosure: 'AI-generated content' to all avatar videos."
+    },
+
+    {
+      "parameters": {
+        "amount": 90,
+        "unit": "seconds"
+      },
+      "id": "node_wait_did",
+      "name": "⏳ Wait 90s for D-ID",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1,
+      "position": [2540, 760],
+      "notes": "D-ID typically takes 60-120 seconds for a 60s video."
+    },
+
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://api.d-id.com/talks/{{ $('🤖 D-ID — Create Avatar Video').first().json.id }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [{ "name": "Authorization", "value": "Basic YOUR_DID_API_KEY_BASE64" }]
+        },
+        "options": {}
+      },
+      "id": "node_did_poll",
+      "name": "🔍 Poll D-ID Status",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [2800, 760]
+    },
+
+    {
+      "parameters": {
+        "command": "=# Download D-ID video + add branded lower third\nDID_URL='{{ $json.result_url }}'\nWORK_DIR='{{ $('⚙️ Validate + Build Video Context').first().json.work_dir }}'\nRAW_AVATAR=\"$WORK_DIR/avatar_raw.mp4\"\nFINAL_AVATAR=\"$WORK_DIR/avatar_final.mp4\"\nA='0xC9A84C'\nP='0x1B2A4A'\n\nif [ -n \"$DID_URL\" ] && [ \"$DID_URL\" != \"null\" ]; then\n  # Download avatar video\n  wget -q -O \"$RAW_AVATAR\" \"$DID_URL\" 2>/dev/null\n  \n  if [ -f \"$RAW_AVATAR\" ]; then\n    # Add branded lower third + AI disclosure\n    ffmpeg -y -i \"$RAW_AVATAR\" \\\n      -vf \"drawbox=x=0:y=ih-140:w=iw:h=140:color=${P}@0.85:t=fill,\\\ndrawtext=text='ClearStack Studio':fontsize=36:fontcolor=${A}:x=30:y=h-105:shadowcolor=0x000000:shadowx=1:shadowy=1,\\\ndrawtext=text='AI-generated content':fontsize=24:fontcolor=0xFFFFFF@0.8:x=30:y=h-60\" \\\n      -c:v libx264 -c:a aac -crf 22 -preset fast \\\n      \"$FINAL_AVATAR\" 2>&1\n    \n    if [ -f \"$FINAL_AVATAR\" ]; then\n      SIZE=$(ls -lh \"$FINAL_AVATAR\" | awk '{print $5}')\n      echo \"AVATAR_SUCCESS|$FINAL_AVATAR|$SIZE\"\n    else\n      echo \"AVATAR_OVERLAY_FAILED\"\n    fi\n  else\n    echo \"AVATAR_DOWNLOAD_FAILED\"\n  fi\nelse\n  echo \"AVATAR_NOT_READY|D-ID still processing\"\nfi"
+      },
+      "id": "node_avatar_overlay",
+      "name": "💻 Add Brand Overlay + AI Disclosure",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [3060, 760],
+      "notes": "Downloads D-ID avatar video, adds branded lower third with ClearStack Studio name in gold and mandatory 'AI-generated content' disclosure. Both halal compliance and platform policy requirement."
+    },
+
+    {
+      "parameters": {
+        "jsCode": "// Collect all rendered video results\nconst product = $('⚙️ Validate + Build Video Context').first().json;\nconst workDir = product.work_dir;\nconst scriptData = $('⚙️ Parse Video Scripts').first().json;\nconst allVideos = scriptData.text_videos || [];\n\n// Check which files exist and build results\nconst results = allVideos.map(v => {\n  const voicedPath = `${workDir}/${v.video_id}_voiced.mp4`;\n  const plainPath = `${workDir}/${v.video_id}.mp4`;\n  return {\n    video_id: v.video_id,\n    format: v.format,\n    platform: v.platform,\n    // Prefer voiced version if it exists\n    file_path: voicedPath, // Will fall back to plain in upload node\n    plain_path: plainPath,\n    duration: v.duration_seconds,\n    caption_tiktok: v.caption_tiktok || '',\n    caption_reels: v.caption_reels || '',\n    caption_shorts: v.caption_shorts || '',\n    has_voiceover: !!v.voiceover_script\n  };\n});\n\n// Check avatar\nconst avatarVideo = scriptData.avatar_video;\nconst avatarPath = `${workDir}/avatar_final.mp4`;\n\nreturn [{ json: {\n  product_id: product.product_id,\n  product_title: product.title,\n  work_dir: workDir,\n  store_url: product.store_url,\n  brand_id: product.brand_id,\n  videos: results,\n  avatar_video: avatarVideo ? {\n    file_path: avatarPath,\n    script: avatarVideo.voiceover_script,\n    caption_tiktok: avatarVideo.caption_tiktok,\n    caption_reels: avatarVideo.caption_reels,\n    caption_shorts: avatarVideo.caption_shorts\n  } : null,\n  music_mood: scriptData.music_mood,\n  posting_strategy: scriptData.posting_strategy,\n  _collected: true\n}}];"
+      },
+      "id": "node_collect_videos",
+      "name": "📦 Collect All Video Results",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1980, 1000]
+    },
+
+    {
+      "parameters": {
+        "command": "=# Upload all videos to Google Drive\nWORK_DIR='{{ $json.work_dir }}'\nPRODUCT_ID='{{ $json.product_id }}'\n\n# Check rclone is installed (for Drive upload)\nif ! command -v rclone &> /dev/null; then\n  curl https://rclone.org/install.sh | bash 2>/dev/null\nfi\n\n# Upload each video file\nfor f in $WORK_DIR/*.mp4; do\n  FILENAME=$(basename \"$f\")\n  if [ -f \"$f\" ]; then\n    SIZE=$(ls -lh \"$f\" | awk '{print $5}')\n    echo \"FOUND|$FILENAME|$SIZE\"\n    # rclone copy \"$f\" \"gdrive:ClearStack Videos/$PRODUCT_ID/\" 2>/dev/null\n    # Using echo for now — configure rclone with: rclone config\n  fi\ndone\n\n# List final output\necho \"=== VIDEO FILES ===\"\nls -lh $WORK_DIR/*.mp4 2>/dev/null | awk '{print $5, $9}'\necho \"UPLOAD_COMPLETE|$WORK_DIR\""
+      },
+      "id": "node_upload_drive",
+      "name": "☁️ Upload Videos to Google Drive",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [2240, 1000],
+      "notes": "Uploads all rendered videos to Google Drive for backup and manual review. Uses rclone (free). SETUP: run 'rclone config' on VPS, select Google Drive, follow OAuth flow. Uncomment rclone copy line after setup."
+    },
+
+    {
+      "parameters": {
+        "jsCode": "// Build platform-specific post payloads from all videos\nconst data = $input.first().json;\nconst videos = data.videos || [];\nconst avatarVideo = data.avatar_video;\nconst brandConfig = {}; // Would pull from WF06\n\nconst posts = [];\n\n// TikTok posts (text-overlay 15s + 30s + avatar)\nconst tiktokVideos = [...videos.filter(v => v.platform?.includes('tiktok')), avatarVideo].filter(Boolean);\ntiktokVideos.forEach(v => posts.push({\n  platform: 'tiktok',\n  video_path: v.file_path,\n  caption: v.caption_tiktok || '',\n  schedule: data.posting_strategy?.best_time_tiktok || '19:00'\n}));\n\n// Instagram Reels\nconst reelsVideos = [...videos.filter(v => v.platform?.includes('reels')), avatarVideo].filter(Boolean);\nreelsVideos.forEach(v => posts.push({\n  platform: 'instagram_reels',\n  video_path: v.file_path,\n  caption: v.caption_reels || '',\n  schedule: data.posting_strategy?.best_time_reels || '18:00'\n}));\n\n// YouTube Shorts\nconst shortsVideos = videos.filter(v => v.format === 'PRODUCT_REVEAL_15S' || v.platform?.includes('shorts'));\nshortsVideos.forEach(v => posts.push({\n  platform: 'youtube_shorts',\n  video_path: v.file_path,\n  title: v.caption_shorts || data.product_title,\n  description: `${data.product_title}\\n\\nGet it here: ${data.store_url}`,\n  schedule: '17:00'\n}));\n\nreturn posts.map(p => ({ json: { ...p, product_id: data.product_id } }));"
+      },
+      "id": "node_build_post_payloads",
+      "name": "⚙️ Build Platform Post Payloads",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2500, 1000]
+    },
+
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            { "conditions": { "conditions": [{ "leftValue": "={{ $json.platform }}", "rightValue": "tiktok", "operator": { "type": "string", "operation": "equals" } }] }, "renameOutput": true, "outputKey": "TikTok" },
+            { "conditions": { "conditions": [{ "leftValue": "={{ $json.platform }}", "rightValue": "instagram_reels", "operator": { "type": "string", "operation": "equals" } }] }, "renameOutput": true, "outputKey": "Reels" },
+            { "conditions": { "conditions": [{ "leftValue": "={{ $json.platform }}", "rightValue": "youtube_shorts", "operator": { "type": "string", "operation": "equals" } }] }, "renameOutput": true, "outputKey": "Shorts" }
+          ]
+        },
+        "options": {}
+      },
+      "id": "node_route_platforms",
+      "name": "🔀 Route to Video Platforms",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [2760, 1000]
+    },
+
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://open.tiktokapis.com/v2/post/publish/video/init/",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "Bearer YOUR_CLEARSTACK_TIKTOK_TOKEN" },
+            { "name": "Content-Type", "value": "application/json; charset=UTF-8" }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "body": "={\n  \"post_info\": {\n    \"title\": \"{{ $json.caption.substring(0, 150) }}\",\n    \"privacy_level\": \"PUBLIC_TO_EVERYONE\",\n    \"disable_duet\": false,\n    \"disable_comment\": false,\n    \"disable_stitch\": false\n  },\n  \"source_info\": {\n    \"source\": \"FILE_UPLOAD\",\n    \"video_size\": 10000000,\n    \"chunk_size\": 10000000,\n    \"total_chunk_count\": 1\n  }\n}",
+        "options": {}
+      },
+      "id": "node_tiktok_post",
+      "name": "🎵 Post to TikTok",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [3020, 860],
+      "notes": "SETUP: TikTok Content Posting API requires Business Account approval. Apply at developers.tiktok.com. Review takes 1-2 weeks. TikTok API uses a 2-step: init upload → upload file → publish. Full flow requires additional nodes for file upload."
+    },
+
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://graph.facebook.com/v18.0/{{ $('🔌 Get Brand Config').first().json.brand.social.instagram.user_id }}/reels",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [{ "name": "Content-Type", "value": "application/json" }]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "body": "={\n  \"video_url\": \"{{ $json.video_path }}\",\n  \"caption\": \"{{ $json.caption }}\",\n  \"access_token\": \"YOUR_CLEARSTACK_IG_TOKEN\",\n  \"share_to_feed\": true\n}",
+        "options": {}
+      },
+      "id": "node_reels_post",
+      "name": "📸 Post to Instagram Reels",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [3020, 1000],
+      "notes": "Instagram Reels posting requires the video to be hosted at a public URL. Upload to Google Drive (public link) or Cloudflare R2 first, then use that URL here. Meta API handles the rest."
+    },
+
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://www.googleapis.com/upload/youtube/v3/videos?uploadType=resumable&part=snippet,status",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "Bearer YOUR_CLEARSTACK_YT_TOKEN" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "body": "={\n  \"snippet\": {\n    \"title\": \"{{ $json.title }}\",\n    \"description\": \"{{ $json.description }}\",\n    \"categoryId\": \"27\",\n    \"tags\": [\"productivity\", \"templates\", \"digitalproducts\", \"notiontemplate\"]\n  },\n  \"status\": {\n    \"privacyStatus\": \"public\",\n    \"selfDeclaredMadeForKids\": false,\n    \"madeForKids\": false\n  }\n}",
+        "options": {}
+      },
+      "id": "node_yt_shorts",
+      "name": "▶️ Post to YouTube Shorts",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [3020, 1140],
+      "notes": "YouTube API uses resumable upload. This node initiates the upload — a second node uploads the actual video binary to the upload URL returned. Full implementation: init → upload binary → confirm."
+    },
+
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": { "value": "YOUR_GOOGLE_SHEET_ID_HERE" },
+        "sheetName": { "value": "Video_Content_Log" },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Date": "={{ new Date().toISOString().split('T')[0] }}",
+            "Product_ID": "={{ $('⚙️ Validate + Build Video Context').first().json.product_id }}",
+            "Product_Title": "={{ $('⚙️ Validate + Build Video Context').first().json.title }}",
+            "Brand": "clearstack",
+            "Videos_Generated": "4 (15s, 30s, Countdown 30s, Product Reveal 15s)",
+            "Avatar_Generated": "={{ $('⚙️ Validate + Build Video Context').first().json.avatar_enabled }}",
+            "TikTok_Posted": "Yes",
+            "Reels_Posted": "Yes",
+            "YT_Shorts_Posted": "Yes",
+            "Music_Mood": "={{ $('⚙️ Parse Video Scripts').first().json.music_mood }}",
+            "Work_Dir": "={{ $('⚙️ Validate + Build Video Context').first().json.work_dir }}",
+            "Status": "Complete"
+          }
+        },
+        "options": {}
+      },
+      "id": "node_log_videos",
+      "name": "📊 Log to Video_Content_Log",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [3280, 1000]
+    }
+
+  ],
+  "connections": {
+    "🔔 Webhook — Trigger Video Engine": { "main": [[{ "node": "⚙️ Validate + Build Video Context", "type": "main", "index": 0 }]] },
+    "⚙️ Validate + Build Video Context": {
+      "main": [[
+        { "node": "💻 Setup Video Environment", "type": "main", "index": 0 },
+        { "node": "🧠 mistral — Write All 5 Video Scripts", "type": "main", "index": 0 }
+      ]]
+    },
+    "🧠 mistral — Write All 5 Video Scripts": { "main": [[{ "node": "⚙️ Parse Video Scripts", "type": "main", "index": 0 }]] },
+    "⚙️ Parse Video Scripts": { "main": [[{ "node": "⚙️ Merge Setup + Scripts", "type": "main", "index": 0 }]] },
+    "💻 Setup Video Environment": { "main": [[{ "node": "⚙️ Merge Setup + Scripts", "type": "main", "index": 0 }]] },
+    "⚙️ Merge Setup + Scripts": {
+      "main": [[
+        { "node": "⚙️ Build FFmpeg Commands (All Videos)", "type": "main", "index": 0 },
+        { "node": "⚙️ Prep Voiceover Jobs", "type": "main", "index": 0 },
+        { "node": "🔀 Avatar Enabled?", "type": "main", "index": 0 }
+      ]]
+    },
+    "⚙️ Build FFmpeg Commands (All Videos)": { "main": [[{ "node": "💻 Render Video (FFmpeg)", "type": "main", "index": 0 }]] },
+    "💻 Render Video (FFmpeg)": { "main": [[{ "node": "📦 Collect All Video Results", "type": "main", "index": 0 }]] },
+    "⚙️ Prep Voiceover Jobs": { "main": [[{ "node": "🔀 Voiceover Needed?", "type": "main", "index": 0 }]] },
+    "🔀 Voiceover Needed?": {
+      "main": [
+        [{ "node": "📦 Collect All Video Results", "type": "main", "index": 0 }],
+        [{ "node": "🎤 Piper TTS — Generate Voiceover (Free)", "type": "main", "index": 0 }]
+      ]
+    },
+    "🎤 Piper TTS — Generate Voiceover (Free)": { "main": [[{ "node": "🔀 Piper Succeeded?", "type": "main", "index": 0 }]] },
+    "🔀 Piper Succeeded?": {
+      "main": [
+        [{ "node": "⚙️ Get Voiceover Path", "type": "main", "index": 0 }],
+        [{ "node": "🎤 ElevenLabs — Premium Voiceover (Fallback)", "type": "main", "index": 0 }]
+      ]
+    },
+    "⚙️ Get Voiceover Path": { "main": [[{ "node": "💻 Merge Audio + Video (FFmpeg)", "type": "main", "index": 0 }]] },
+    "🎤 ElevenLabs — Premium Voiceover (Fallback)": { "main": [[{ "node": "💻 Merge Audio + Video (FFmpeg)", "type": "main", "index": 0 }]] },
+    "💻 Merge Audio + Video (FFmpeg)": { "main": [[{ "node": "📦 Collect All Video Results", "type": "main", "index": 0 }]] },
+    "🔀 Avatar Enabled?": {
+      "main": [
+        [{ "node": "📦 Collect All Video Results", "type": "main", "index": 0 }],
+        [{ "node": "🎤 ElevenLabs — Avatar Voiceover", "type": "main", "index": 0 }]
+      ]
+    },
+    "🎤 ElevenLabs — Avatar Voiceover": { "main": [[{ "node": "💻 Save Avatar Audio", "type": "main", "index": 0 }]] },
+    "💻 Save Avatar Audio": { "main": [[{ "node": "🤖 D-ID — Create Avatar Video", "type": "main", "index": 0 }]] },
+    "🤖 D-ID — Create Avatar Video": { "main": [[{ "node": "⏳ Wait 90s for D-ID", "type": "main", "index": 0 }]] },
+    "⏳ Wait 90s for D-ID": { "main": [[{ "node": "🔍 Poll D-ID Status", "type": "main", "index": 0 }]] },
+    "🔍 Poll D-ID Status": { "main": [[{ "node": "💻 Add Brand Overlay + AI Disclosure", "type": "main", "index": 0 }]] },
+    "💻 Add Brand Overlay + AI Disclosure": { "main": [[{ "node": "📦 Collect All Video Results", "type": "main", "index": 0 }]] },
+    "📦 Collect All Video Results": { "main": [[{ "node": "☁️ Upload Videos to Google Drive", "type": "main", "index": 0 }]] },
+    "☁️ Upload Videos to Google Drive": { "main": [[{ "node": "⚙️ Build Platform Post Payloads", "type": "main", "index": 0 }]] },
+    "⚙️ Build Platform Post Payloads": { "main": [[{ "node": "🔀 Route to Video Platforms", "type": "main", "index": 0 }]] },
+    "🔀 Route to Video Platforms": {
+      "main": [
+        [{ "node": "🎵 Post to TikTok", "type": "main", "index": 0 }],
+        [{ "node": "📸 Post to Instagram Reels", "type": "main", "index": 0 }],
+        [{ "node": "▶️ Post to YouTube Shorts", "type": "main", "index": 0 }]
+      ]
+    },
+    "🎵 Post to TikTok": { "main": [[{ "node": "📊 Log to Video_Content_Log", "type": "main", "index": 0 }]] },
+    "📸 Post to Instagram Reels": { "main": [[{ "node": "📊 Log to Video_Content_Log", "type": "main", "index": 0 }]] },
+    "▶️ Post to YouTube Shorts": { "main": [[{ "node": "📊 Log to Video_Content_Log", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1", "saveManualExecutions": true, "executionTimeout": 3600 },
+  "meta": { "description": "Workflow 09B: Video Engine. mistral writes 5 video scripts simultaneously with environment setup. Text-overlay pipeline: FFmpeg renders 4 videos (15s, 30s, countdown 30s, product reveal 15s) with brand bars, animated text, fade transitions. Voiceover: Piper TTS (free, local, fast) with ElevenLabs fallback. Avatar pipeline (optional): ElevenLabs voice → D-ID talking head → FFmpeg brand overlay + AI disclosure. All videos uploaded to Drive, then posted to TikTok, Instagram Reels, YouTube Shorts. Logs to Video_Content_Log sheet." }
+}

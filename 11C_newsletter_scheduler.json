@@ -1,0 +1,132 @@
+{
+  "name": "11C — Weekly Newsletter Scheduler (Thursdays)",
+  "nodes": [
+
+    {
+      "parameters": {
+        "rule": {
+          "interval": [{ "field": "weeks", "weeksInterval": 1, "triggerAtDay": [4], "triggerAtHour": 9, "triggerAtMinute": 0 }]
+        }
+      },
+      "id": "node_schedule",
+      "name": "⏰ Every Thursday 9 AM",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [200, 400],
+      "notes": "Fires every Thursday at 9 AM. Pulls the most recently published product, passes to WF11A newsletter writer, WF11A sends to WF11B, Brevo sends to subscribers."
+    },
+
+    {
+      "parameters": {
+        "operation": "read",
+        "documentId": { "value": "YOUR_GOOGLE_SHEET_ID_HERE" },
+        "sheetName": { "value": "Published_Products" },
+        "options": { "returnAllMatches": true }
+      },
+      "id": "node_read_products",
+      "name": "📊 Read Published Products Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [460, 400]
+    },
+
+    {
+      "parameters": {
+        "jsCode": "// Find the most recently published product not yet featured in newsletter\nconst rows = $input.all().map(i => i.json);\n\n// Sort by published date descending\nconst published = rows\n  .filter(r => r.Status === 'Published' || r.Etsy_Status === 'LIVE')\n  .sort((a, b) => new Date(b.Published_At || b.Created_At || 0) - new Date(a.Published_At || a.Created_At || 0));\n\n// Find first one not yet in newsletter (Newsletter_Featured !== 'YES')\nconst featured = published.find(r => r.Newsletter_Featured !== 'YES') || published[0];\n\nif (!featured) {\n  return [{ json: { skip: true, reason: 'No published products found' } }];\n}\n\nconst storeUrl = featured.Etsy_URL || featured.Gumroad_URL || featured.Payhip_URL || 'https://clearstackstudio.com';\n\nreturn [{ json: {\n  skip: false,\n  product_id: featured.Product_ID,\n  product_name: featured.Title || featured.Product_Name,\n  product_url: storeUrl,\n  product_price: featured.Price || '9.99',\n  product_description: featured.Description || '',\n  product_row: featured\n}}];"
+      },
+      "id": "node_pick_product",
+      "name": "⚙️ Pick Featured Product",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [720, 400]
+    },
+
+    {
+      "parameters": {
+        "conditions": {
+          "conditions": [{ "leftValue": "={{ $json.skip }}", "rightValue": true, "operator": { "type": "boolean", "operation": "true" } }]
+        }
+      },
+      "id": "node_skip_check",
+      "name": "🔀 Products Available?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [980, 400]
+    },
+
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "YOUR_N8N_BASE_URL/webhook/write-email-sequence",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [{ "name": "Content-Type", "value": "application/json" }] },
+        "sendBody": true,
+        "contentType": "json",
+        "body": "={\n  \"sequence_type\": \"newsletter\",\n  \"product_name\": \"{{ $json.product_name }}\",\n  \"product_url\": \"{{ $json.product_url }}\",\n  \"product_price\": \"{{ $json.product_price }}\",\n  \"product_description\": \"{{ $json.product_description }}\"\n}",
+        "options": { "timeout": 1800000 }
+      },
+      "id": "node_trigger_writer",
+      "name": "🔌 Trigger WF11A — Write Newsletter",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1240, 280],
+      "notes": "Triggers WF11A to write the newsletter with the featured product. WF11A writes it, passes to WF11B, Brevo sends it. Full chain runs automatically."
+    },
+
+    {
+      "parameters": {
+        "method": "PUT",
+        "url": "https://clearstackstudio.com/wp-json/wp/v2/posts",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [{ "name": "Authorization", "value": "Basic YOUR_WP_BASE64_AUTH" }] },
+        "options": { "timeout": 10000 }
+      },
+      "id": "node_mark_featured",
+      "name": "📊 Mark Product as Newsletter Featured",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [1500, 280],
+      "notes": "Updates Newsletter_Featured = YES on the product row so it won't be featured again next week."
+    },
+
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": { "value": "YOUR_GOOGLE_SHEET_ID_HERE" },
+        "sheetName": { "value": "Newsletter_Log" },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Date": "={{ new Date().toISOString().split('T')[0] }}",
+            "Day": "Thursday",
+            "Featured_Product": "={{ $('⚙️ Pick Featured Product').first().json.product_name }}",
+            "Status": "Sent via Brevo",
+            "Brevo_Response": "={{ $('🔌 Trigger WF11A — Write Newsletter').first().json.message || 'Queued' }}"
+          }
+        },
+        "options": {}
+      },
+      "id": "node_log",
+      "name": "📊 Log to Newsletter_Log",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [1760, 280]
+    }
+
+  ],
+  "connections": {
+    "⏰ Every Thursday 9 AM": { "main": [[{ "node": "📊 Read Published Products Sheet", "type": "main", "index": 0 }]] },
+    "📊 Read Published Products Sheet": { "main": [[{ "node": "⚙️ Pick Featured Product", "type": "main", "index": 0 }]] },
+    "⚙️ Pick Featured Product": { "main": [[{ "node": "🔀 Products Available?", "type": "main", "index": 0 }]] },
+    "🔀 Products Available?": {
+      "main": [
+        [],
+        [{ "node": "🔌 Trigger WF11A — Write Newsletter", "type": "main", "index": 0 }]
+      ]
+    },
+    "🔌 Trigger WF11A — Write Newsletter": { "main": [[{ "node": "📊 Mark Product as Newsletter Featured", "type": "main", "index": 0 }]] },
+    "📊 Mark Product as Newsletter Featured": { "main": [[{ "node": "📊 Log to Newsletter_Log", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1", "saveManualExecutions": true, "executionTimeout": 3600 },
+  "meta": { "description": "WF11C: Weekly Newsletter Scheduler. Every Thursday 9 AM: picks most recently unpublished product from sheet, triggers WF11A to write newsletter, logs result. Full chain: WF11C → WF11A (write) → WF11B (Brevo send). Zero manual involvement." }
+}

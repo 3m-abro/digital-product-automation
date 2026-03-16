@@ -1,0 +1,385 @@
+{
+  "name": "05 — Prompt Engineer + Humanization Agents",
+  "nodes": [
+
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "humanize-and-engineer",
+        "responseMode": "lastNode",
+        "responseData": "allEntries"
+      },
+      "id": "node_webhook_in",
+      "name": "🔔 Webhook — Receive Content to Process",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1.1,
+      "position": [200, 500],
+      "notes": "Central entry point. Called from Workflows 02B and 04 via HTTP Request node. Receives content_type, raw_content, product_category, and product_name."
+    },
+
+    {
+      "parameters": {
+        "jsCode": "// Validate and unpack incoming payload\nconst body = $input.first().json.body || $input.first().json;\n\nconst required = ['content_type', 'raw_content', 'product_category'];\nconst missing = required.filter(k => !body[k]);\n\nif (missing.length > 0) {\n  return [{ json: {\n    error: true,\n    message: `Missing required fields: ${missing.join(', ')}`,\n    received: Object.keys(body)\n  }}];\n}\n\n// Normalize content type\nconst typeMap = {\n  'ebook': 'ebook',\n  'ebook_chapter': 'ebook',\n  'guide': 'ebook',\n  'listing': 'listing',\n  'title': 'listing',\n  'description': 'listing',\n  'social': 'social',\n  'caption': 'social',\n  'tiktok': 'social',\n  'instagram': 'social',\n  'facebook': 'social',\n  'pinterest': 'social',\n  'sd_prompt': 'sd_prompt',\n  'image_prompt': 'sd_prompt',\n  'art_prompt': 'sd_prompt'\n};\n\nconst normalizedType = typeMap[body.content_type?.toLowerCase()] || body.content_type;\n\n// Detect tone from product category\nconst category = (body.product_category || '').toLowerCase();\nconst productName = (body.product_name || '').toLowerCase();\n\nlet detectedTone = 'friendly_relatable';\nlet toneDescription = '';\n\nif (category.includes('productivity') || category.includes('notion') || category.includes('planner') || productName.includes('productivity') || productName.includes('planner')) {\n  detectedTone = 'professional_warm';\n  toneDescription = 'Professional but approachable. Like a smart friend who has their life together and wants to help you get yours together too. Efficient language, practical tone, light encouragement.';\n} else if (category.includes('ai art') || category.includes('watercolor') || category.includes('illustration') || category.includes('art pack')) {\n  detectedTone = 'creative_expressive';\n  toneDescription = 'Artistic and expressive. Evocative language that makes people feel the beauty of the art. Descriptive, sensory, emotional. Like a passionate artist talking about their work.';\n} else if (category.includes('ebook') || category.includes('guide') || category.includes('how to') || productName.includes('guide') || productName.includes('tips')) {\n  detectedTone = 'mentor_casual';\n  toneDescription = 'Like a knowledgeable friend teaching over coffee. Casual but substantive. Uses \"you\" and \"your\" a lot. Cuts fluff. Gets to the point fast. Occasionally uses humor.';\n} else if (category.includes('printable') || category.includes('template') || category.includes('canva')) {\n  detectedTone = 'cheerful_helpful';\n  toneDescription = 'Cheerful, enthusiastic, helpful. Like a creative friend who loves sharing cool finds. Upbeat but not annoying. Excited about design and organization.';\n} else if (category.includes('budget') || category.includes('finance') || category.includes('money')) {\n  detectedTone = 'trustworthy_empathetic';\n  toneDescription = 'Trustworthy and empathetic. Acknowledges that money is stressful. Non-judgmental. Clear and simple language. No jargon. Reassuring without being condescending.';\n} else if (category.includes('fitness') || category.includes('wellness') || category.includes('health')) {\n  detectedTone = 'motivational_real';\n  toneDescription = 'Motivational but real — not toxic positivity. Acknowledges the struggle. Uses direct, punchy sentences. Action-oriented. Like a coach who actually gets it.';\n} else {\n  detectedTone = 'friendly_relatable';\n  toneDescription = 'Warm, relatable, and genuine. Speaks like a real person — not a brand. Occasional personality. Gets to the point. Uses simple, clear language with a friendly energy.';\n}\n\nreturn [{\n  json: {\n    ...body,\n    content_type: normalizedType,\n    original_type: body.content_type,\n    detected_tone: detectedTone,\n    tone_description: toneDescription,\n    product_category: body.product_category,\n    product_name: body.product_name || '',\n    raw_content: body.raw_content,\n    _validated: true,\n    _received_at: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "node_validate_route",
+      "name": "⚙️ Validate + Detect Tone by Product",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [460, 500],
+      "notes": "Validates payload, normalizes content type, and auto-detects the correct brand tone based on product category. 6 tone profiles: professional_warm, creative_expressive, mentor_casual, cheerful_helpful, trustworthy_empathetic, motivational_real."
+    },
+
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": { "conditions": [{ "leftValue": "={{ $json.content_type }}", "rightValue": "sd_prompt", "operator": { "type": "string", "operation": "equals" } }] },
+              "renameOutput": true, "outputKey": "SD Prompt"
+            },
+            {
+              "conditions": { "conditions": [{ "leftValue": "={{ $json.content_type }}", "rightValue": "ebook", "operator": { "type": "string", "operation": "equals" } }] },
+              "renameOutput": true, "outputKey": "eBook"
+            },
+            {
+              "conditions": { "conditions": [{ "leftValue": "={{ $json.content_type }}", "rightValue": "listing", "operator": { "type": "string", "operation": "equals" } }] },
+              "renameOutput": true, "outputKey": "Listing"
+            },
+            {
+              "conditions": { "conditions": [{ "leftValue": "={{ $json.content_type }}", "rightValue": "social", "operator": { "type": "string", "operation": "equals" } }] },
+              "renameOutput": true, "outputKey": "Social"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "node_content_switch",
+      "name": "🔀 Route by Content Type",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [720, 500],
+      "notes": "Routes to the correct specialized agent: SD Prompt Engineer, eBook Humanizer, Listing Humanizer, or Social Humanizer."
+    },
+
+    {
+      "parameters": {
+        "model": "mistral",
+        "messages": {
+          "values": [
+            {
+              "role": "system",
+              "content": "You are an elite Stable Diffusion prompt engineer with deep expertise in commercial digital art. You transform basic image prompts into highly optimized, commercially successful prompts that generate stunning, sellable artwork. You know exactly which keywords boost quality, which composition terms matter, and how to target specific art markets. You understand what sells on Etsy, Gumroad, and Creative Market. Respond in valid JSON only."
+            },
+            {
+              "role": "user",
+              "content": "=Optimize this Stable Diffusion prompt for maximum commercial quality and sellability:\n\nOriginal prompt: {{$json.raw_content}}\nProduct: {{$json.product_name}}\nCategory: {{$json.product_category}}\n\nYour job:\n1. Analyze what the base prompt is trying to achieve\n2. Identify the target buyer and use case\n3. Engineer a dramatically better prompt\n4. Add quality boosters, composition terms, lighting, style keywords\n5. Create 3 variants (safe, bold, experimental)\n\nRules:\n- NO celebrity faces or copyrighted characters\n- Commercial use safe\n- Optimized for SDXL 1.0\n- Include aspect ratio recommendation\n\nRespond ONLY with this JSON:\n{\n  \"analysis\": {\n    \"original_intent\": \"what the original prompt was trying to create\",\n    \"target_buyer\": \"who would buy this\",\n    \"commercial_potential\": \"low|medium|high\",\n    \"weaknesses_found\": [\"weakness 1\", \"weakness 2\"]\n  },\n  \"optimized_prompts\": {\n    \"safe\": {\n      \"prompt\": \"full optimized prompt - proven commercial style\",\n      \"negative_prompt\": \"specific negative prompt\",\n      \"style_notes\": \"what makes this commercially strong\",\n      \"aspect_ratio\": \"1:1 or 2:3 or 16:9\",\n      \"cfg_scale\": 7,\n      \"steps\": 30\n    },\n    \"bold\": {\n      \"prompt\": \"more distinctive, eye-catching variant\",\n      \"negative_prompt\": \"specific negative prompt\",\n      \"style_notes\": \"what makes this stand out\",\n      \"aspect_ratio\": \"1:1 or 2:3 or 16:9\",\n      \"cfg_scale\": 8,\n      \"steps\": 35\n    },\n    \"experimental\": {\n      \"prompt\": \"unique, trend-forward variant\",\n      \"negative_prompt\": \"specific negative prompt\",\n      \"style_notes\": \"target trend this captures\",\n      \"aspect_ratio\": \"1:1 or 2:3\",\n      \"cfg_scale\": 9,\n      \"steps\": 40\n    }\n  },\n  \"quality_boosters_added\": [\"list of specific keywords added and why\"],\n  \"recommended_variant\": \"safe|bold|experimental\",\n  \"recommendation_reason\": \"why this variant will sell best\"\n}"
+            }
+          ]
+        },
+        "options": { "temperature": 0.6 }
+      },
+      "id": "node_prompt_engineer",
+      "name": "🎯 Prompt Engineer Agent (mistral)",
+      "type": "n8n-nodes-base.ollama",
+      "typeVersion": 1,
+      "position": [980, 200],
+      "notes": "Uses mistral for precise, analytical prompt engineering. Produces 3 variants (safe/bold/experimental) with full SDXL parameters. mistral is ideal here — better at structured technical optimization than llama3."
+    },
+
+    {
+      "parameters": {
+        "jsCode": "// Parse prompt engineer output and extract the recommended variant\nconst raw = $input.first().json;\nconst inputData = $('🔀 Route by Content Type').first().json;\n\nlet engineered;\ntry {\n  const content = raw?.message?.content || raw?.response || '';\n  const match = content.match(/```json\\n?([\\s\\S]*?)\\n?```/) || content.match(/({[\\s\\S]*})/);\n  engineered = JSON.parse((match ? match[1] || match[0] : content).trim());\n} catch(e) {\n  // Fallback: return original prompt with basic enhancements\n  engineered = {\n    error: true,\n    optimized_prompts: {\n      safe: {\n        prompt: inputData.raw_content + ', masterpiece, best quality, highly detailed, 8k resolution, professional photography, sharp focus, commercial art',\n        negative_prompt: 'blurry, watermark, text, signature, low quality, bad anatomy, distorted',\n        aspect_ratio: '1:1',\n        cfg_scale: 7,\n        steps: 30\n      }\n    },\n    recommended_variant: 'safe'\n  };\n}\n\n// Pick the recommended variant\nconst recommended = engineered.recommended_variant || 'safe';\nconst bestPrompt = engineered.optimized_prompts?.[recommended] || engineered.optimized_prompts?.safe;\n\nreturn [{\n  json: {\n    // Pass back to caller\n    content_type: 'sd_prompt',\n    product_name: inputData.product_name,\n    product_category: inputData.product_category,\n    original_prompt: inputData.raw_content,\n    \n    // Engineered output\n    engineered_prompt: bestPrompt?.prompt,\n    negative_prompt: bestPrompt?.negative_prompt,\n    aspect_ratio: bestPrompt?.aspect_ratio || '1:1',\n    cfg_scale: bestPrompt?.cfg_scale || 7,\n    steps: bestPrompt?.steps || 30,\n    style_notes: bestPrompt?.style_notes,\n    recommended_variant: recommended,\n    recommendation_reason: engineered.recommendation_reason,\n    \n    // All variants for reference\n    all_variants: engineered.optimized_prompts,\n    analysis: engineered.analysis,\n    quality_boosters: engineered.quality_boosters_added,\n    \n    // Metadata\n    agent: 'prompt_engineer_mistral',\n    processed_at: new Date().toISOString(),\n    _ready: true\n  }\n}];"
+      },
+      "id": "node_parse_engineered_prompt",
+      "name": "⚙️ Extract Best Engineered Prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1240, 200],
+      "notes": "Parses mistral output, picks the recommended variant, and formats it for Replicate API. Includes fallback if parsing fails."
+    },
+
+    {
+      "parameters": {
+        "model": "llama3",
+        "messages": {
+          "values": [
+            {
+              "role": "system",
+              "content": "You are a skilled human editor and content humanizer. Your job is to rewrite AI-generated ebook content so it reads as if written by a real, experienced human author. You have a strong instinct for what feels authentic vs what feels robotic.\n\nYou NEVER use these AI giveaway phrases: 'delve into', 'leverage', 'it's worth noting', 'in today's fast-paced world', 'game-changer', 'in conclusion', 'furthermore', 'moreover', 'utilize', 'facilitate', 'in the realm of', 'embark on', 'navigate', 'landscape', 'paradigm', 'holistic', 'robust', 'seamlessly', 'synergy', 'transformative', 'foster', 'pivotal', 'actionable insights', 'at the end of the day'\n\nYou DO:\n- Vary sentence length. Short punches. Then longer flowing sentences that build an idea. Then short again.\n- Write like you're talking to one specific person, not a crowd\n- Use contractions naturally (you'll, it's, don't, they're)\n- Start sentences with 'And', 'But', 'Because' sometimes — like real writers do\n- Add specific examples, mini-stories, and concrete details\n- Let personality leak through in word choice\n- Occasionally ask the reader a rhetorical question\n- Include one or two very short paragraphs (1-2 sentences) for impact\n\nRespond in valid JSON only."
+            },
+            {
+              "role": "user",
+              "content": "=Humanize this ebook content:\n\nProduct: {{$json.product_name}}\nCategory: {{$json.product_category}}\nTone Profile: {{$json.detected_tone}}\nTone Description: {{$json.tone_description}}\n\nRAW CONTENT TO HUMANIZE:\n{{$json.raw_content}}\n\nRewrite this content applying your full humanization process. Make it feel like a real person wrote it — someone who genuinely knows this topic and cares about the reader.\n\nRespond ONLY with this JSON:\n{\n  \"humanized_content\": \"The fully rewritten content. Same information, completely human feel. Preserve all factual content and structure but transform the voice entirely.\",\n  \"tone_applied\": \"brief note on the specific tone choices made\",\n  \"ai_phrases_removed\": [\"list of AI phrases that were found and removed\"],\n  \"techniques_used\": [\"specific techniques applied in this rewrite\"],\n  \"readability_improvement\": \"brief note on how readability improved\",\n  \"word_count_original\": 0,\n  \"word_count_humanized\": 0\n}"
+            }
+          ]
+        },
+        "options": { "temperature": 0.82 }
+      },
+      "id": "node_humanize_ebook",
+      "name": "🧠 Humanization Agent — eBook (llama3)",
+      "type": "n8n-nodes-base.ollama",
+      "typeVersion": 1,
+      "position": [980, 420],
+      "notes": "llama3 at temp 0.82 — higher temperature gives more natural, varied writing. System prompt is carefully engineered with explicit forbidden phrases and specific humanization rules. This runs on every chapter individually for best results."
+    },
+
+    {
+      "parameters": {
+        "model": "llama3",
+        "messages": {
+          "values": [
+            {
+              "role": "system",
+              "content": "You are a conversion copywriter and brand voice specialist. You rewrite digital product listings so they feel written by a real seller who loves their product — not by a marketing bot or AI. You understand Etsy buyer psychology deeply.\n\nYou NEVER use: 'perfect for', 'look no further', 'this amazing', 'you won't be disappointed', 'high-quality', 'don't miss out', 'game-changing', 'elevate your', 'transform your', 'take your X to the next level', 'whether you're a beginner or expert'\n\nYou DO:\n- Lead with the specific problem this product solves — be concrete\n- Use 'you' language constantly — talk to the buyer directly\n- Include one surprising specific detail that makes it feel real\n- Write the title like a search + desire combo (not just keywords)\n- Make the description sound like a recommendation from a friend who already bought it\n- Include one tiny vulnerability or honest admission ('it won't do X, but it's perfect for Y')\n- End with a soft, natural CTA — not 'buy now!'\n\nRespond in valid JSON only."
+            },
+            {
+              "role": "user",
+              "content": "=Humanize this product listing:\n\nProduct: {{$json.product_name}}\nCategory: {{$json.product_category}}\nTone: {{$json.tone_description}}\n\nRAW LISTING CONTENT:\n{{$json.raw_content}}\n\nRewrite this listing so it converts like crazy while feeling 100% human.\n\nRespond ONLY with this JSON:\n{\n  \"humanized_title\": \"Rewritten SEO title — compelling AND searchable, max 140 chars\",\n  \"humanized_description_short\": \"2-3 sentence Gumroad/Payhip description. Hook → value → soft CTA.\",\n  \"humanized_description_long\": \"Full Etsy description. Problem → solution → specifics → what's included → who it's for → honest note → soft close. 200-250 words.\",\n  \"humanized_tags\": [\"tag1\", \"tag2\", \"tag3\", \"tag4\", \"tag5\", \"tag6\", \"tag7\", \"tag8\", \"tag9\", \"tag10\", \"tag11\", \"tag12\", \"tag13\"],\n  \"tone_applied\": \"note on tone choices\",\n  \"conversion_hooks_added\": [\"specific psychological hooks used\"],\n  \"ai_phrases_removed\": [\"phrases removed\"]\n}"
+            }
+          ]
+        },
+        "options": { "temperature": 0.78 }
+      },
+      "id": "node_humanize_listing",
+      "name": "🧠 Humanization Agent — Listing (llama3)",
+      "type": "n8n-nodes-base.ollama",
+      "typeVersion": 1,
+      "position": [980, 620],
+      "notes": "Specialized listing humanizer. System prompt built on Etsy buyer psychology. Produces human title, short description, full Etsy description, and 13 tags — all humanized."
+    },
+
+    {
+      "parameters": {
+        "model": "mistral",
+        "messages": {
+          "values": [
+            {
+              "role": "system",
+              "content": "You are a social media content creator who specializes in organic-feeling content for digital product sellers. Your content gets real engagement because it doesn't sound like an ad.\n\nYou write differently for each platform:\n- INSTAGRAM: Visual storytelling first. Relatable moment → product → soft sell. Emojis used purposefully not spammed. 3-5 hashtag groups separated by dots.\n- FACEBOOK: Longer, community feel. Tell a story. Ask a question. Build connection before the sell.\n- TIKTOK: Hook in first 2 words. Pattern interrupt. Conversational. TikTok slang where appropriate. Fast paced. No fluff.\n- PINTEREST: Keyword-rich but reads naturally. Benefit-focused. Aspirational. Descriptive.\n- YOUTUBE SHORTS: Title = curiosity gap. Description = context + value + link. Tags = search terms.\n\nYou NEVER say: 'Check out my new product!', 'Link in bio to buy!', 'Don't miss this!', 'You need this!', 'This is a game changer'\n\nYou make people WANT to buy without feeling sold to. Respond in valid JSON only."
+            },
+            {
+              "role": "user",
+              "content": "=Humanize and optimize these social media captions:\n\nProduct: {{$json.product_name}}\nCategory: {{$json.product_category}}\nTone: {{$json.tone_description}}\nStore URL: {{$json.store_url || 'link in bio'}}\n\nRAW SOCIAL CONTENT:\n{{$json.raw_content}}\n\nRewrite ALL captions for each platform. Each must feel native to that platform.\n\nRespond ONLY with this JSON:\n{\n  \"instagram\": {\n    \"caption\": \"Full humanized IG caption with strategic emoji use\",\n    \"hashtags\": \"#tag1 #tag2 ... (30 tags total, formatted as string)\",\n    \"hook_type\": \"what type of hook was used\"\n  },\n  \"facebook\": {\n    \"post\": \"Full humanized Facebook post — longer, story-driven\",\n    \"engagement_question\": \"Question to add at end to boost comments\"\n  },\n  \"tiktok\": {\n    \"hook\": \"First 2-3 words only — the scroll-stopping opener\",\n    \"script\": \"Full 15-second script with timing notes [0:00] [0:05] etc\",\n    \"caption\": \"Short TikTok caption with 3-5 hashtags\",\n    \"trending_sounds_suggestion\": \"Type of sound/music that fits\"\n  },\n  \"pinterest\": {\n    \"title\": \"Pin title — keyword rich and compelling\",\n    \"description\": \"Full pin description — aspirational + keywords\"\n  },\n  \"youtube_shorts\": {\n    \"title\": \"Curiosity gap title for YouTube Shorts\",\n    \"description\": \"Full video description with timestamps and link\",\n    \"tags\": [\"tag1\", \"tag2\", \"tag3\", \"tag4\", \"tag5\"]\n  },\n  \"platform_notes\": \"Brief note on the overall strategy used across platforms\"\n}"
+            }
+          ]
+        },
+        "options": { "temperature": 0.85 }
+      },
+      "id": "node_humanize_social",
+      "name": "🧠 Humanization Agent — Social (mistral)",
+      "type": "n8n-nodes-base.ollama",
+      "typeVersion": 1,
+      "position": [980, 820],
+      "notes": "mistral for social — better at platform-specific tone differentiation. Higher temp (0.85) for more creative, natural-sounding posts. Writes natively for each platform's culture."
+    },
+
+    {
+      "parameters": {
+        "jsCode": "// Universal parser for all humanization outputs\nconst raw = $input.first().json;\nconst inputData = $input.first().json;\n\n// Get which pipeline this came from\nconst callerNode = $input.first();\n\nlet parsed;\ntry {\n  const content = raw?.message?.content || raw?.response || '';\n  const match = content.match(/```json\\n?([\\s\\S]*?)\\n?```/) || content.match(/({[\\s\\S]*})/);\n  parsed = JSON.parse((match ? match[1] || match[0] : content).trim());\n} catch(e) {\n  parsed = {\n    parse_error: true,\n    error_message: e.message,\n    raw_excerpt: raw?.message?.content?.substring(0, 300)\n  };\n}\n\nreturn [{\n  json: {\n    ...parsed,\n    _humanized: true,\n    _agent: 'humanization_agent',\n    _processed_at: new Date().toISOString(),\n    _product_name: inputData.product_name,\n    _product_category: inputData.product_category,\n    _tone_applied: inputData.detected_tone\n  }\n}];"
+      },
+      "id": "node_parse_ebook_human",
+      "name": "⚙️ Parse eBook Humanized Output",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1240, 420]
+    },
+
+    {
+      "parameters": {
+        "jsCode": "const raw = $input.first().json;\nconst inputData = $input.first().json;\n\nlet parsed;\ntry {\n  const content = raw?.message?.content || raw?.response || '';\n  const match = content.match(/```json\\n?([\\s\\S]*?)\\n?```/) || content.match(/({[\\s\\S]*})/);\n  parsed = JSON.parse((match ? match[1] || match[0] : content).trim());\n} catch(e) {\n  parsed = { parse_error: true, error_message: e.message };\n}\n\nreturn [{\n  json: {\n    ...parsed,\n    _humanized: true,\n    _agent: 'listing_humanizer',\n    _processed_at: new Date().toISOString(),\n    _product_name: inputData.product_name,\n    _product_category: inputData.product_category\n  }\n}];"
+      },
+      "id": "node_parse_listing_human",
+      "name": "⚙️ Parse Listing Humanized Output",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1240, 620]
+    },
+
+    {
+      "parameters": {
+        "jsCode": "const raw = $input.first().json;\nconst inputData = $input.first().json;\n\nlet parsed;\ntry {\n  const content = raw?.message?.content || raw?.response || '';\n  const match = content.match(/```json\\n?([\\s\\S]*?)\\n?```/) || content.match(/({[\\s\\S]*})/);\n  parsed = JSON.parse((match ? match[1] || match[0] : content).trim());\n} catch(e) {\n  parsed = { parse_error: true, error_message: e.message };\n}\n\nreturn [{\n  json: {\n    ...parsed,\n    _humanized: true,\n    _agent: 'social_humanizer',\n    _processed_at: new Date().toISOString(),\n    _product_name: inputData.product_name,\n    _product_category: inputData.product_category\n  }\n}];"
+      },
+      "id": "node_parse_social_human",
+      "name": "⚙️ Parse Social Humanized Output",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1240, 820]
+    },
+
+    {
+      "parameters": {
+        "jsCode": "// Quality gate — score the humanized content before returning it\n// Catches cases where Ollama output still has AI tells\n\nconst items = $input.all();\nconst results = [];\n\n// AI giveaway phrases to scan for\nconst aiBuzzwords = [\n  'delve into', 'leverage', \"it's worth noting\", 'game-changer',\n  'in conclusion', 'furthermore', 'moreover', 'utilize', 'facilitate',\n  'in the realm of', 'embark on', 'navigate', 'paradigm', 'holistic',\n  'robust', 'seamlessly', 'synergy', 'transformative', 'foster',\n  'pivotal', 'actionable insights', 'at the end of the day',\n  'in today\\'s fast-paced', 'look no further', 'elevate your',\n  'take your', 'to the next level', 'don\\'t miss out'\n];\n\nfor (const item of items) {\n  const data = item.json;\n  \n  // Get all text content to scan\n  const allText = JSON.stringify(data).toLowerCase();\n  \n  const foundPhrases = aiBuzzwords.filter(phrase => allText.includes(phrase.toLowerCase()));\n  const aiScore = foundPhrases.length;\n  \n  // Quality assessment\n  let quality = 'excellent';\n  let needsRetry = false;\n  \n  if (aiScore >= 5) {\n    quality = 'poor';\n    needsRetry = true;\n  } else if (aiScore >= 3) {\n    quality = 'fair';\n    needsRetry = false; // Accept but flag\n  } else if (aiScore >= 1) {\n    quality = 'good';\n  }\n  \n  results.push({\n    json: {\n      ...data,\n      _quality_gate: {\n        score: quality,\n        ai_phrases_remaining: foundPhrases,\n        ai_phrase_count: aiScore,\n        needs_retry: needsRetry,\n        gate_passed: aiScore < 5,\n        checked_at: new Date().toISOString()\n      }\n    }\n  });\n}\n\nreturn results;"
+      },
+      "id": "node_quality_gate",
+      "name": "🔍 Quality Gate — AI Phrase Scanner",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1500, 570],
+      "notes": "Scans humanized output for remaining AI buzzwords. Scores quality as excellent/good/fair/poor. Flags content needing retry. This is your safety net before content goes live."
+    },
+
+    {
+      "parameters": {
+        "conditions": {
+          "conditions": [{
+            "leftValue": "={{ $json._quality_gate.needs_retry }}",
+            "rightValue": true,
+            "operator": { "type": "boolean", "operation": "true" }
+          }]
+        }
+      },
+      "id": "node_quality_check",
+      "name": "🔀 Quality Good Enough?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1760, 570],
+      "notes": "If quality is poor (5+ AI phrases remaining) → send to retry node. Otherwise → pass through to response."
+    },
+
+    {
+      "parameters": {
+        "model": "llama3",
+        "messages": {
+          "values": [
+            {
+              "role": "system",
+              "content": "You are a final-pass human editor. Remove ALL AI-sounding phrases from the content. Replace them with natural, conversational human language. Be aggressive. The content must sound like a real person wrote it. Respond with ONLY the cleaned content — no JSON wrapper, no explanation. Just the cleaned text."
+            },
+            {
+              "role": "user",
+              "content": "=Clean this content. Remove ALL AI phrases. Rewrite flagged sections to sound completely human.\n\nFlagged AI phrases found: {{$json._quality_gate.ai_phrases_remaining.join(', ')}}\n\nContent to clean:\n{{JSON.stringify($json)}}\n\nReturn the complete cleaned JSON with the same structure but humanized text."
+            }
+          ]
+        },
+        "options": { "temperature": 0.9 }
+      },
+      "id": "node_retry_humanize",
+      "name": "🔄 Retry — Deep Humanization Pass",
+      "type": "n8n-nodes-base.ollama",
+      "typeVersion": 1,
+      "position": [2020, 700],
+      "notes": "Second pass humanization for content that failed the quality gate. Higher temperature (0.9) for more aggressive rewriting. Uses llama3's knowledge of exactly which phrases were flagged."
+    },
+
+    {
+      "parameters": {
+        "jsCode": "// Merge quality-passed and retry outputs into single response\nconst passedItems = $('🔀 Quality Good Enough?').all().filter(i => !i.json._quality_gate?.needs_retry);\nconst retryItems = $input.all();\n\nconst allItems = [...passedItems, ...retryItems];\n\n// Build final response payload\nconst finalOutputs = allItems.map(item => {\n  const data = item.json;\n  return {\n    json: {\n      success: true,\n      content_type: data.content_type || data._agent?.replace('_humanizer','').replace('_agent',''),\n      product_name: data._product_name,\n      product_category: data._product_category,\n      tone_applied: data._tone_applied,\n      quality_score: data._quality_gate?.score || 'good',\n      ai_phrases_remaining: data._quality_gate?.ai_phrase_count || 0,\n      \n      // Content outputs by type\n      humanized_content: data.humanized_content || null,         // ebook\n      humanized_title: data.humanized_title || null,             // listing\n      humanized_description_short: data.humanized_description_short || null,\n      humanized_description_long: data.humanized_description_long || null,\n      humanized_tags: data.humanized_tags || null,\n      instagram: data.instagram || null,                         // social\n      facebook: data.facebook || null,\n      tiktok: data.tiktok || null,\n      pinterest: data.pinterest || null,\n      youtube_shorts: data.youtube_shorts || null,\n      \n      // Prompt engineer specific\n      engineered_prompt: data.engineered_prompt || null,\n      negative_prompt: data.negative_prompt || null,\n      cfg_scale: data.cfg_scale || null,\n      steps: data.steps || null,\n      all_variants: data.all_variants || null,\n      \n      _metadata: {\n        processed_at: new Date().toISOString(),\n        agents_used: data._agent || 'multiple',\n        retried: retryItems.includes(item)\n      }\n    }\n  };\n});\n\nreturn finalOutputs.length > 0 ? finalOutputs : [{ json: { success: false, error: 'No outputs produced' } }];"
+      },
+      "id": "node_build_response",
+      "name": "⚙️ Build Final Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2280, 570],
+      "notes": "Merges all pipeline outputs into a clean, consistent response format. Works for all 4 content types."
+    },
+
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": { "value": "YOUR_GOOGLE_SHEET_ID_HERE" },
+        "sheetName": { "value": "Humanization_Log" },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Timestamp": "={{ $json._metadata.processed_at }}",
+            "Product": "={{ $json.product_name }}",
+            "Category": "={{ $json.product_category }}",
+            "Content_Type": "={{ $json.content_type }}",
+            "Tone_Applied": "={{ $json.tone_applied }}",
+            "Quality_Score": "={{ $json.quality_score }}",
+            "AI_Phrases_Remaining": "={{ $json.ai_phrases_remaining }}",
+            "Retried": "={{ $json._metadata.retried }}",
+            "Status": "Complete"
+          }
+        },
+        "options": {}
+      },
+      "id": "node_log_humanization",
+      "name": "📊 Log to Humanization_Log Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [2540, 570],
+      "notes": "Logs every humanization job for quality tracking. Over time you'll see patterns — which categories need more retries, quality trends, etc."
+    },
+
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json) }}"
+      },
+      "id": "node_webhook_response",
+      "name": "📤 Return Humanized Content",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [2800, 570],
+      "notes": "Returns the humanized content back to whichever workflow called this webhook. The caller (02B or 04) receives the cleaned content and continues its pipeline."
+    }
+
+  ],
+  "connections": {
+    "🔔 Webhook — Receive Content to Process": {
+      "main": [[{ "node": "⚙️ Validate + Detect Tone by Product", "type": "main", "index": 0 }]]
+    },
+    "⚙️ Validate + Detect Tone by Product": {
+      "main": [[{ "node": "🔀 Route by Content Type", "type": "main", "index": 0 }]]
+    },
+    "🔀 Route by Content Type": {
+      "main": [
+        [{ "node": "🎯 Prompt Engineer Agent (mistral)", "type": "main", "index": 0 }],
+        [{ "node": "🧠 Humanization Agent — eBook (llama3)", "type": "main", "index": 0 }],
+        [{ "node": "🧠 Humanization Agent — Listing (llama3)", "type": "main", "index": 0 }],
+        [{ "node": "🧠 Humanization Agent — Social (mistral)", "type": "main", "index": 0 }]
+      ]
+    },
+    "🎯 Prompt Engineer Agent (mistral)": {
+      "main": [[{ "node": "⚙️ Extract Best Engineered Prompt", "type": "main", "index": 0 }]]
+    },
+    "⚙️ Extract Best Engineered Prompt": {
+      "main": [[{ "node": "🔍 Quality Gate — AI Phrase Scanner", "type": "main", "index": 0 }]]
+    },
+    "🧠 Humanization Agent — eBook (llama3)": {
+      "main": [[{ "node": "⚙️ Parse eBook Humanized Output", "type": "main", "index": 0 }]]
+    },
+    "⚙️ Parse eBook Humanized Output": {
+      "main": [[{ "node": "🔍 Quality Gate — AI Phrase Scanner", "type": "main", "index": 0 }]]
+    },
+    "🧠 Humanization Agent — Listing (llama3)": {
+      "main": [[{ "node": "⚙️ Parse Listing Humanized Output", "type": "main", "index": 0 }]]
+    },
+    "⚙️ Parse Listing Humanized Output": {
+      "main": [[{ "node": "🔍 Quality Gate — AI Phrase Scanner", "type": "main", "index": 0 }]]
+    },
+    "🧠 Humanization Agent — Social (mistral)": {
+      "main": [[{ "node": "⚙️ Parse Social Humanized Output", "type": "main", "index": 0 }]]
+    },
+    "⚙️ Parse Social Humanized Output": {
+      "main": [[{ "node": "🔍 Quality Gate — AI Phrase Scanner", "type": "main", "index": 0 }]]
+    },
+    "🔍 Quality Gate — AI Phrase Scanner": {
+      "main": [[{ "node": "🔀 Quality Good Enough?", "type": "main", "index": 0 }]]
+    },
+    "🔀 Quality Good Enough?": {
+      "main": [
+        [{ "node": "⚙️ Build Final Response", "type": "main", "index": 0 }],
+        [{ "node": "🔄 Retry — Deep Humanization Pass", "type": "main", "index": 0 }]
+      ]
+    },
+    "🔄 Retry — Deep Humanization Pass": {
+      "main": [[{ "node": "⚙️ Build Final Response", "type": "main", "index": 0 }]]
+    },
+    "⚙️ Build Final Response": {
+      "main": [[{ "node": "📊 Log to Humanization_Log Sheet", "type": "main", "index": 0 }]]
+    },
+    "📊 Log to Humanization_Log Sheet": {
+      "main": [[{ "node": "📤 Return Humanized Content", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "executionTimeout": 600
+  },
+  "meta": {
+    "description": "Workflow 05: Centralized Prompt Engineer + Humanization Agent. Called via webhook from Workflows 02B and 04. Routes by content type: SD prompts → mistral prompt engineer (3 variants, quality optimized), eBooks → llama3 humanizer (rhythm, personality, no AI buzzwords), Listings → llama3 listing specialist (Etsy psychology, conversion copy), Social → mistral platform specialist (native tone per platform). Includes quality gate scanner that auto-retries poor-quality outputs. All results logged to Humanization_Log sheet."
+  }
+}

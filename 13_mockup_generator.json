@@ -1,0 +1,167 @@
+{
+  "name": "13 — Mockup Generator (Etsy Listing Images)",
+  "nodes": [
+
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "generate-mockups",
+        "responseMode": "lastNode",
+        "responseData": "allEntries"
+      },
+      "id": "node_webhook",
+      "name": "🔔 Webhook — Generate Mockups (called by WF02C)",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1.1,
+      "position": [200, 400],
+      "notes": "Receives PDF data from WF02C. Generates 6-10 professional listing images for Etsy. Returns array of image URLs. Triggers WF03 for publishing after completion."
+    },
+
+    {
+      "parameters": {
+        "jsCode": "const body = $input.first().json.body || $input.first().json;\n\nconst product = {\n  id:          body.product_id,\n  title:       body.product_title,\n  type:        body.product_type,\n  pdf_url:     body.pdf_url,\n  pdf_path:    body.pdf_path,\n  page_count:  body.page_count,\n  pages:       body.pages_breakdown || [],\n  // Brand\n  brand:       'ClearStack Studio',\n  website:     'clearstackstudio.com',\n  primary:     '#1B2A4A',\n  accent:      '#C9A84C',\n  // Mockup output paths\n  mockup_dir:  `/tmp/mockups/${body.product_id}`\n};\n\n// 10 mockup types — Etsy allows 10 images per listing\n// Each mockup serves a specific conversion purpose\nconst mockupPlan = [\n  {\n    id: 'hero',\n    slot: 1,\n    purpose: 'Hero — first thing buyer sees. Product name on clean background.',\n    style: 'text_overlay_clean',\n    priority: 'critical'\n  },\n  {\n    id: 'mockup_desk',\n    slot: 2,\n    purpose: 'Lifestyle — planner on a desk with coffee/pen context',\n    style: 'device_frame_a4_desk',\n    priority: 'critical'\n  },\n  {\n    id: 'pages_preview',\n    slot: 3,\n    purpose: 'Content preview — shows actual pages inside the planner',\n    style: 'pages_spread',\n    priority: 'critical'\n  },\n  {\n    id: 'whats_included',\n    slot: 4,\n    purpose: 'What is included — lists all sections and page types',\n    style: 'feature_list',\n    priority: 'critical'\n  },\n  {\n    id: 'how_to_use',\n    slot: 5,\n    purpose: 'How to use — 3 steps: download, print, use',\n    style: 'steps_graphic',\n    priority: 'high'\n  },\n  {\n    id: 'close_up_1',\n    slot: 6,\n    purpose: 'Close-up of weekly spread or key page',\n    style: 'page_closeup',\n    priority: 'high'\n  },\n  {\n    id: 'close_up_2',\n    slot: 7,\n    purpose: 'Close-up of monthly or goal page',\n    style: 'page_closeup_2',\n    priority: 'medium'\n  },\n  {\n    id: 'value_prop',\n    slot: 8,\n    purpose: 'Value proposition — key benefit in large text',\n    style: 'quote_card',\n    priority: 'medium'\n  },\n  {\n    id: 'instant_download',\n    slot: 9,\n    purpose: 'Trust signal — instant download badge, format info',\n    style: 'trust_badge',\n    priority: 'medium'\n  },\n  {\n    id: 'brand_closer',\n    slot: 10,\n    purpose: 'Brand closer — ClearStack Studio branding, shop name',\n    style: 'brand_card',\n    priority: 'low'\n  }\n];\n\nreturn [{ json: {\n  product,\n  mockup_plan: mockupPlan,\n  critical_mockups: mockupPlan.filter(m => m.priority === 'critical'),\n  all_mockups: mockupPlan,\n  original_data: body\n}}];"
+      },
+      "id": "node_plan",
+      "name": "⚙️ Plan Mockup Set",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [460, 400]
+    },
+
+    {
+      "parameters": {
+        "command": "=# Setup mockup directory and install Python dependencies\nmkdir -p '{{ $json.product.mockup_dir }}'\n\n# Install Pillow if not present\npython3 -c \"import PIL\" 2>/dev/null || pip3 install Pillow --break-system-packages --quiet\n\n# Install requests if not present  \npython3 -c \"import requests\" 2>/dev/null || pip3 install requests --break-system-packages --quiet\n\n# Check wkhtmltoimage for page previews\nwhich wkhtmltoimage && echo 'wkhtmltoimage ready' || echo 'wkhtmltoimage not found - will skip page previews'\n\n# Download first 3 pages of PDF as images for preview mockups\n# Requires poppler-utils: apt-get install -y poppler-utils\nPDF_PATH='{{ $json.product.pdf_path }}'\nOUTPUT_DIR='{{ $json.product.mockup_dir }}'\n\nif [ -f \"$PDF_PATH\" ]; then\n  pdftoppm -r 150 -l 3 -png \"$PDF_PATH\" \"$OUTPUT_DIR/page\" 2>&1\n  echo \"Page images extracted\"\n  ls \"$OUTPUT_DIR\"/*.png 2>/dev/null | head -5\nelse\n  echo \"PDF not on local disk — skipping page extraction\"\n  echo \"PDF URL: {{ $json.product.pdf_url }}\"\nfi\n\necho 'SETUP_COMPLETE'"
+      },
+      "id": "node_setup",
+      "name": "⚙️ Setup Mockup Environment",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [720, 400]
+    },
+
+    {
+      "parameters": {
+        "command": "=python3 << 'PYEOF'\nimport os\nimport sys\nfrom PIL import Image, ImageDraw, ImageFont\nimport textwrap\nimport json\n\n# ── CONFIG ────────────────────────────────────────────────\nPRODUCT_ID    = '{{ $json.product.id }}'\nPRODUCT_TITLE = '{{ $json.product.title }}'\nPRODUCT_TYPE  = '{{ $json.product.type }}'\nPAGE_COUNT    = {{ $json.product.page_count }}\nBRAND         = '{{ $json.product.brand }}'\nWEBSITE       = '{{ $json.product.website }}'\nMOCKUP_DIR    = '{{ $json.product.mockup_dir }}'\nPAGES         = {{ JSON.stringify($json.product.pages) }}\n\n# Brand colors (RGB)\nPRIMARY  = (27, 42, 74)    # #1B2A4A navy\nACCENT   = (201, 168, 76)  # #C9A84C gold\nWHITE    = (255, 255, 255)\nLIGHT_BG = (248, 249, 250)\nTEXT     = (44, 44, 44)\nGREY     = (150, 150, 150)\n\n# Etsy recommended: 2000x2000 or 3000x2250\nW, H = 2000, 2000\n\nos.makedirs(MOCKUP_DIR, exist_ok=True)\n\ndef get_font(size, bold=False):\n    \"\"\"Get font — fall back to default if custom not available\"\"\"\n    font_paths = [\n        f'/usr/share/fonts/truetype/dejavu/DejaVuSans{\"Bold\" if bold else \"\"}.ttf',\n        f'/usr/share/fonts/truetype/liberation/LiberationSans-{\"Bold\" if bold else \"Regular\"}.ttf',\n        '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',\n    ]\n    for path in font_paths:\n        if os.path.exists(path):\n            try:\n                return ImageFont.truetype(path, size)\n            except:\n                continue\n    return ImageFont.load_default()\n\ndef draw_wrapped_text(draw, text, font, max_width, x, y, fill, line_spacing=1.3):\n    \"\"\"Draw text with word wrapping. Returns final y position.\"\"\"\n    words = text.split()\n    lines = []\n    current_line = []\n    \n    for word in words:\n        test_line = ' '.join(current_line + [word])\n        bbox = draw.textbbox((0, 0), test_line, font=font)\n        if bbox[2] - bbox[0] <= max_width:\n            current_line.append(word)\n        else:\n            if current_line:\n                lines.append(' '.join(current_line))\n            current_line = [word]\n    if current_line:\n        lines.append(' '.join(current_line))\n    \n    for line in lines:\n        draw.text((x, y), line, font=font, fill=fill)\n        bbox = draw.textbbox((0, 0), line, font=font)\n        y += int((bbox[3] - bbox[1]) * line_spacing)\n    return y\n\n# ── MOCKUP 1: HERO IMAGE ──────────────────────────────────\nprint('Generating Hero mockup...')\nimg = Image.new('RGB', (W, H), LIGHT_BG)\ndraw = ImageDraw.Draw(img)\n\n# Navy top bar\ndraw.rectangle([0, 0, W, 200], fill=PRIMARY)\n# Gold accent line\ndraw.rectangle([0, 200, W, 216], fill=ACCENT)\n\n# Brand name in top bar\nbrand_font = get_font(52, bold=True)\ndraw.text((80, 70), BRAND, font=brand_font, fill=WHITE)\n\n# Main title area — centered\ntitle_font = get_font(88, bold=True)\nsubtitle_font = get_font(48)\n\n# Title (centered, with word wrap)\nmax_w = W - 160\ntitle_bbox = draw.textbbox((0, 0), PRODUCT_TITLE, font=title_font)\ntitle_h = title_bbox[3] - title_bbox[1]\n\n# Center vertically in middle section\ncenter_y = 380\ndraw_wrapped_text(draw, PRODUCT_TITLE, title_font, max_w, 80, center_y, PRIMARY, 1.2)\n\n# Gold divider\ndraw.rectangle([80, center_y + title_h + 80, W - 80, center_y + title_h + 86], fill=ACCENT)\n\n# Product type subtitle\ntype_labels = {\n    'weekly_planner': 'Weekly Planner — Printable PDF',\n    'daily_planner': 'Daily Planner — Printable PDF',\n    'goal_tracker': 'Goal Tracker — Printable PDF',\n    'habit_tracker': 'Habit Tracker — Printable PDF',\n    'client_tracker': 'Client Tracker — Printable PDF',\n    'content_calendar': 'Content Calendar — Printable PDF',\n    'budget_planner': 'Budget Planner — Printable PDF',\n}\nsubtitle = type_labels.get(PRODUCT_TYPE, 'Printable PDF Planner')\ndraw.text((80, center_y + title_h + 120), subtitle, font=subtitle_font, fill=GREY)\n\n# Page count badge\nbadge_text = f'{PAGE_COUNT} Pages  ·  A4 Size  ·  Instant Download'\nbadge_font = get_font(40)\ndraw.text((80, center_y + title_h + 200), badge_text, font=badge_font, fill=TEXT)\n\n# Bottom navy bar\ndraw.rectangle([0, H - 140, W, H], fill=PRIMARY)\ndraw.text((80, H - 90), WEBSITE, font=get_font(44), fill=ACCENT)\n\nimg.save(f'{MOCKUP_DIR}/01_hero.png', 'PNG', quality=95)\nprint(f'  Saved: 01_hero.png')\n\n\n# ── MOCKUP 2: WHAT'S INCLUDED ─────────────────────────────\nprint('Generating Whats Included mockup...')\nimg = Image.new('RGB', (W, H), WHITE)\ndraw = ImageDraw.Draw(img)\n\n# Header\ndraw.rectangle([0, 0, W, 240], fill=PRIMARY)\ndraw.rectangle([0, 240, W, 256], fill=ACCENT)\ndraw.text((80, 80), \"What's Included\", font=get_font(72, bold=True), fill=WHITE)\n\n# List items from pages breakdown\nitems = PAGES if PAGES else [\n    f'{PAGE_COUNT} printable pages',\n    'Cover page',\n    'Monthly overview pages',\n    'Weekly planner spreads',\n    'Notes pages',\n    'A4 size — print at home or office',\n    'PDF format — instant download',\n]\n\ny = 320\nitem_font = get_font(52)\ncheck_font = get_font(60, bold=True)\n\nfor item in items[:8]:  # Max 8 items\n    # Gold checkmark\n    draw.text((80, y), '✓', font=check_font, fill=ACCENT)\n    draw.text((160, y + 6), str(item), font=item_font, fill=TEXT)\n    y += 100\n    # Divider\n    draw.rectangle([80, y - 20, W - 80, y - 18], fill=LIGHT_BG)\n\n# Bottom bar\ndraw.rectangle([0, H - 140, W, H], fill=PRIMARY)\ndraw.text((80, H - 90), f'{BRAND}  ·  {WEBSITE}', font=get_font(40), fill=ACCENT)\n\nimg.save(f'{MOCKUP_DIR}/04_whats_included.png', 'PNG', quality=95)\nprint(f'  Saved: 04_whats_included.png')\n\n\n# ── MOCKUP 3: HOW TO USE (3 STEPS) ───────────────────────\nprint('Generating How To Use mockup...')\nimg = Image.new('RGB', (W, H), LIGHT_BG)\ndraw = ImageDraw.Draw(img)\n\n# Header\ndraw.rectangle([0, 0, W, 200], fill=PRIMARY)\ndraw.rectangle([0, 200, W, 214], fill=ACCENT)\ndraw.text((80, 68), 'How To Use', font=get_font(72, bold=True), fill=WHITE)\n\nsteps = [\n    ('01', 'Purchase & Download', 'Complete your purchase and download the PDF file instantly to your device.'),\n    ('02', 'Print at Home', 'Print on standard A4 paper using any home or office printer. Works in black and white too.'),\n    ('03', 'Start Planning', 'Grab a pen and start. Your system is ready on day one.'),\n]\n\ny = 280\nfor num, title, desc in steps:\n    # Step circle\n    draw.ellipse([80, y, 200, y + 120], fill=PRIMARY)\n    draw.text((112 if len(num) == 2 else 125, y + 28), num, font=get_font(56, bold=True), fill=ACCENT)\n    \n    # Step content\n    draw.text((240, y + 10), title, font=get_font(58, bold=True), fill=PRIMARY)\n    draw_wrapped_text(draw, desc, get_font(42), W - 320, 240, y + 82, GREY)\n    \n    y += 220\n    draw.rectangle([80, y - 30, W - 80, y - 28], fill=ACCENT)\n\n# Bottom bar\ndraw.rectangle([0, H - 140, W, H], fill=PRIMARY)\ndraw.text((80, H - 90), f'{BRAND}  ·  {WEBSITE}', font=get_font(40), fill=ACCENT)\n\nimg.save(f'{MOCKUP_DIR}/05_how_to_use.png', 'PNG', quality=95)\nprint(f'  Saved: 05_how_to_use.png')\n\n\n# ── MOCKUP 4: INSTANT DOWNLOAD TRUST BADGE ───────────────\nprint('Generating Trust Badge mockup...')\nimg = Image.new('RGB', (W, H), PRIMARY)\ndraw = ImageDraw.Draw(img)\n\n# Central content\ncenter_x = W // 2\n\n# Large down-arrow icon (CSS-style using rectangles)\narrow_y = 320\ndraw.rectangle([center_x - 20, arrow_y, center_x + 20, arrow_y + 160], fill=ACCENT)\ndraw.polygon([\n    (center_x - 80, arrow_y + 160),\n    (center_x + 80, arrow_y + 160),\n    (center_x, arrow_y + 280)\n], fill=ACCENT)\n\n# Text\ntitle_font = get_font(96, bold=True)\nsubtitle_font = get_font(52)\nsmall_font = get_font(40)\n\ntitle = 'INSTANT DOWNLOAD'\ntbbox = draw.textbbox((0, 0), title, font=title_font)\ntx = (W - (tbbox[2] - tbbox[0])) // 2\ndraw.text((tx, 680), title, font=title_font, fill=WHITE)\n\nsub = 'Available immediately after purchase'\nsbbox = draw.textbbox((0, 0), sub, font=subtitle_font)\nsx = (W - (sbbox[2] - sbbox[0])) // 2\ndraw.text((sx, 820), sub, font=subtitle_font, fill=ACCENT)\n\n# Format details\ndetails = ['PDF Format', 'A4 Size', 'Print Ready', 'Commercial Use: Personal Only']\ndy = 980\nfor detail in details:\n    dbbox = draw.textbbox((0, 0), detail, font=small_font)\n    dx = (W - (dbbox[2] - dbbox[0])) // 2\n    draw.text((dx, dy), detail, font=small_font, fill=(180, 190, 210))\n    dy += 70\n\n# Bottom\ndraw.rectangle([0, H - 140, W, H], fill=(15, 25, 55))\ndraw.text((80, H - 90), f'{BRAND}  ·  {WEBSITE}', font=get_font(40), fill=ACCENT)\n\nimg.save(f'{MOCKUP_DIR}/09_instant_download.png', 'PNG', quality=95)\nprint(f'  Saved: 09_instant_download.png')\n\n\n# ── MOCKUP 5: BRAND CLOSER ────────────────────────────────\nprint('Generating Brand Closer mockup...')\nimg = Image.new('RGB', (W, H), LIGHT_BG)\ndraw = ImageDraw.Draw(img)\n\n# Full navy background with gold accents\ndraw.rectangle([0, 0, W, H], fill=PRIMARY)\ndraw.rectangle([0, 0, 12, H], fill=ACCENT)  # Left border\ndraw.rectangle([W - 12, 0, W, H], fill=ACCENT)  # Right border\ndraw.rectangle([0, 0, W, 12], fill=ACCENT)  # Top border\ndraw.rectangle([0, H - 12, W, H], fill=ACCENT)  # Bottom border\n\n# Center content\nbrand_font = get_font(110, bold=True)\ntag_font = get_font(52)\nsmall_font = get_font(40)\n\nbrand_bbox = draw.textbbox((0, 0), BRAND, font=brand_font)\nbx = (W - (brand_bbox[2] - brand_bbox[0])) // 2\ndraw.text((bx, 680), BRAND, font=brand_font, fill=WHITE)\n\n# Gold divider\ndraw.rectangle([200, 840, W - 200, 856], fill=ACCENT)\n\ntagline = 'Tools that clear your mind and build your future.'\ntbbox = draw.textbbox((0, 0), tagline, font=tag_font)\ntx = (W - (tbbox[2] - tbbox[0])) // 2\ndraw.text((tx, 900), tagline, font=tag_font, fill=ACCENT)\n\nwbbox = draw.textbbox((0, 0), WEBSITE, font=small_font)\nwx = (W - (wbbox[2] - wbbox[0])) // 2\ndraw.text((wx, 1020), WEBSITE, font=small_font, fill=(150, 165, 195))\n\nimg.save(f'{MOCKUP_DIR}/10_brand_closer.png', 'PNG', quality=95)\nprint(f'  Saved: 10_brand_closer.png')\n\n\n# ── SUMMARY ───────────────────────────────────────────────\nprint('\\nMockup generation complete.')\ngenerated = [f for f in os.listdir(MOCKUP_DIR) if f.endswith('.png')]\nprint(f'Generated {len(generated)} mockups:')\nfor f in sorted(generated):\n    size = os.path.getsize(f'{MOCKUP_DIR}/{f}')\n    print(f'  {f}: {size:,} bytes')\n\nprint('GENERATION_COMPLETE')\nPYEOF"
+      },
+      "id": "node_generate_mockups",
+      "name": "🎨 Python — Generate Mockup Images",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [980, 400],
+      "notes": "Generates 5 core mockups using Python Pillow: Hero, Whats Included, How To Use, Instant Download, Brand Closer. Pure Python, zero external APIs, zero cost. Each mockup is 2000x2000px PNG optimized for Etsy. Processing time: 30-90 seconds."
+    },
+
+    {
+      "parameters": {
+        "command": "=# Attempt to generate page preview mockup from extracted PDF pages\n# These use actual planner pages as preview images\n\nMOCKUP_DIR='{{ $json.product.mockup_dir }}'\nPRODUCT_ID='{{ $json.product.id }}'\n\n# Check if page images were extracted\nPAGE_FILES=$(ls \"$MOCKUP_DIR\"/page-*.png 2>/dev/null | wc -l)\necho \"Found $PAGE_FILES extracted page images\"\n\nif [ \"$PAGE_FILES\" -gt 0 ]; then\n  python3 << 'PYEOF'\nimport os\nfrom PIL import Image, ImageDraw, ImageFont\nimport glob\n\nMOCKUP_DIR = os.environ.get('MOCKUP_DIR', '{{ $json.product.mockup_dir }}')\nW, H = 2000, 2000\nPRIMARY = (27, 42, 74)\nACCENT = (201, 168, 76)\nWHITE = (255, 255, 255)\nLIGHT_BG = (248, 249, 250)\n\n# Get extracted page images\npage_files = sorted(glob.glob(f'{MOCKUP_DIR}/page-*.png'))[:3]\n\nif page_files:\n    # Create spread mockup showing 2 pages side by side\n    img = Image.new('RGB', (W, H), LIGHT_BG)\n    draw = ImageDraw.Draw(img)\n    \n    # Header\n    draw.rectangle([0, 0, W, 160], fill=PRIMARY)\n    draw.rectangle([0, 160, W, 172], fill=ACCENT)\n    \n    font = ImageFont.load_default()\n    # Load page images and place them\n    if len(page_files) >= 2:\n        # Two-page spread\n        p1 = Image.open(page_files[0]).convert('RGB')\n        p2 = Image.open(page_files[1]).convert('RGB')\n        \n        spread_w = (W - 120) // 2\n        spread_h = int(spread_w * 1.414)  # A4 ratio\n        if spread_h > H - 280:\n            spread_h = H - 280\n            spread_w = int(spread_h / 1.414)\n        \n        p1 = p1.resize((spread_w, spread_h), Image.LANCZOS)\n        p2 = p2.resize((spread_w, spread_h), Image.LANCZOS)\n        \n        y_offset = 200\n        img.paste(p1, (40, y_offset))\n        img.paste(p2, (60 + spread_w, y_offset))\n        \n    elif len(page_files) == 1:\n        p1 = Image.open(page_files[0]).convert('RGB')\n        pw = int((W - 200) * 0.7)\n        ph = int(pw * 1.414)\n        p1 = p1.resize((pw, ph), Image.LANCZOS)\n        img.paste(p1, ((W - pw) // 2, 200))\n    \n    # Bottom bar\n    draw.rectangle([0, H - 120, W, H], fill=PRIMARY)\n    \n    img.save(f'{MOCKUP_DIR}/03_pages_preview.png', 'PNG', quality=95)\n    print('Page preview mockup saved: 03_pages_preview.png')\n    print('PREVIEW_GENERATED=true')\nPYEOF\nelse\n  echo 'No page images available — skipping page preview'\n  echo 'PREVIEW_GENERATED=false'\n  # Create a placeholder pages preview\n  python3 -c \"\nfrom PIL import Image, ImageDraw\nimport os\nW, H = 2000, 2000\nimg = Image.new('RGB', (W, H), (248, 249, 250))\ndraw = ImageDraw.Draw(img)\ndraw.rectangle([0, 0, W, 160], fill=(27, 42, 74))\ndraw.rectangle([0, 160, W, 172], fill=(201, 168, 76))\n# Simple page lines to suggest a planner\nfor y in range(250, H-150, 55):\n    draw.rectangle([80, y, W-80, y+1], fill=(220, 220, 220))\ndraw.rectangle([0, H-120, W, H], fill=(27, 42, 74))\nimg.save('${MOCKUP_DIR}/03_pages_preview.png', 'PNG', quality=90)\nprint('Placeholder preview created')\n\"\nfi"
+      },
+      "id": "node_page_preview",
+      "name": "🎨 Generate Page Preview Mockup",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [1240, 400]
+    },
+
+    {
+      "parameters": {
+        "command": "=# Upload all mockup images to R2/S3\nMOCKUP_DIR='{{ $json.product.mockup_dir }}'\nPRODUCT_ID='{{ $json.product.id }}'\n\necho \"Uploading mockups from: $MOCKUP_DIR\"\n\n# Count mockups\nMOCKUP_COUNT=$(ls \"$MOCKUP_DIR\"/*.png 2>/dev/null | wc -l)\necho \"Found $MOCKUP_COUNT mockup images\"\n\nif [ \"$MOCKUP_COUNT\" -eq 0 ]; then\n  echo 'ERROR: No mockup images found'\n  exit 1\nfi\n\n# Upload to R2\nrclone copy \\\n  \"$MOCKUP_DIR\" \\\n  \"r2:clearstack-products/mockups/$PRODUCT_ID/\" \\\n  --include '*.png' \\\n  --s3-acl public-read 2>&1\n\nif [ $? -ne 0 ]; then\n  echo 'R2 upload failed — using local nginx fallback'\n  mkdir -p \"/var/www/clearstack-downloads/mockups/$PRODUCT_ID\"\n  cp \"$MOCKUP_DIR\"/*.png \"/var/www/clearstack-downloads/mockups/$PRODUCT_ID/\"\n  BASE_URL=\"https://clearstackstudio.com/downloads/mockups/$PRODUCT_ID\"\nelse\n  BASE_URL=\"https://pub-YOUR_R2_ACCOUNT_ID.r2.dev/mockups/$PRODUCT_ID\"\nfi\n\n# Output all image URLs\necho \"BASE_URL=$BASE_URL\"\nfor f in $(ls \"$MOCKUP_DIR\"/*.png | sort); do\n  FNAME=$(basename \"$f\")\n  echo \"MOCKUP_URL=${BASE_URL}/${FNAME}\"\ndone\n\necho \"TOTAL_MOCKUPS=$MOCKUP_COUNT\"\necho 'UPLOAD_COMPLETE'"
+      },
+      "id": "node_upload_mockups",
+      "name": "☁️ Upload Mockups to R2",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [1500, 400]
+    },
+
+    {
+      "parameters": {
+        "jsCode": "const uploadOutput = $input.first().json.stdout || '';\nconst config = $('⚙️ Plan Mockup Set').first().json;\n\n// Parse all mockup URLs\nconst baseUrlMatch = uploadOutput.match(/BASE_URL=(.+)/);\nconst baseUrl = baseUrlMatch ? baseUrlMatch[1].trim() : '';\n\nconst mockupUrls = [];\nconst urlMatches = uploadOutput.matchAll(/MOCKUP_URL=(.+)/g);\nfor (const match of urlMatches) {\n  mockupUrls.push(match[1].trim());\n}\n\nconst totalMockups = parseInt((uploadOutput.match(/TOTAL_MOCKUPS=(\\d+)/) || [])[1] || '0');\n\nif (mockupUrls.length === 0) {\n  return [{ json: {\n    error: true,\n    message: 'No mockup URLs found',\n    upload_output: uploadOutput\n  }}];\n}\n\n// Sort mockups by filename (01, 02, 03...)\nmockupUrls.sort();\n\nconst result = {\n  product_id: config.product.id,\n  product_title: config.product.title,\n  product_type: config.product.type,\n  pdf_url: config.product.pdf_url,\n  mockup_urls: mockupUrls,\n  mockup_count: totalMockups,\n  hero_image_url: mockupUrls[0] || '',\n  listing_images: mockupUrls,\n  generated_at: new Date().toISOString(),\n  _ready_for_publishing: true\n};\n\nconsole.log(`${totalMockups} mockups ready for: ${config.product.title}`);\nreturn [{ json: result }];"
+      },
+      "id": "node_compile_results",
+      "name": "⚙️ Compile Mockup Results",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1760, 400]
+    },
+
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": { "value": "YOUR_GOOGLE_SHEET_ID_HERE" },
+        "sheetName": { "value": "Generated_PDFs" },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Mockup_Count": "={{ $json.mockup_count }}",
+            "Hero_Image_URL": "={{ $json.hero_image_url }}",
+            "All_Mockup_URLs": "={{ $json.mockup_urls.join(' | ') }}",
+            "Mockup_Status": "Complete — Ready for Etsy"
+          }
+        },
+        "options": {}
+      },
+      "id": "node_log",
+      "name": "📊 Update Generated_PDFs with Mockup URLs",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [2020, 240]
+    },
+
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "YOUR_N8N_BASE_URL/webhook/publish-product",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [{ "name": "Content-Type", "value": "application/json" }] },
+        "sendBody": true,
+        "contentType": "json",
+        "body": "={{ JSON.stringify($json) }}",
+        "options": { "timeout": 120000 }
+      },
+      "id": "node_trigger_publish",
+      "name": "🔌 Trigger WF03 — Publish Product",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [2020, 560],
+      "notes": "Passes complete product data to WF03: PDF URL, all mockup URLs, product metadata. WF03 creates the Etsy listing with all 10 images, sets the digital download file, and publishes. The product goes live on Etsy within minutes."
+    },
+
+    {
+      "parameters": {
+        "command": "=# Cleanup temp files to prevent disk fill\n# Keep PDFs and mockups in R2/S3, remove from local /tmp\nrm -rf '{{ $json.product.mockup_dir }}'\nrm -f '{{ $('⚙️ Plan Mockup Set').first().json.product.pdf_path }}'\necho 'Temp files cleaned up'\ndf -h /tmp"
+      },
+      "id": "node_cleanup",
+      "name": "🗑️ Cleanup Temp Files",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [2280, 400],
+      "notes": "Removes temp files from /tmp after upload to R2. Critical for VPS disk management — WF09B video files plus PDF generation would fill 400GB SSD quickly without cleanup."
+    }
+
+  ],
+  "connections": {
+    "🔔 Webhook — Generate Mockups (called by WF02C)": { "main": [[{ "node": "⚙️ Plan Mockup Set", "type": "main", "index": 0 }]] },
+    "⚙️ Plan Mockup Set": { "main": [[{ "node": "⚙️ Setup Mockup Environment", "type": "main", "index": 0 }]] },
+    "⚙️ Setup Mockup Environment": { "main": [[{ "node": "🎨 Python — Generate Mockup Images", "type": "main", "index": 0 }]] },
+    "🎨 Python — Generate Mockup Images": { "main": [[{ "node": "🎨 Generate Page Preview Mockup", "type": "main", "index": 0 }]] },
+    "🎨 Generate Page Preview Mockup": { "main": [[{ "node": "☁️ Upload Mockups to R2", "type": "main", "index": 0 }]] },
+    "☁️ Upload Mockups to R2": { "main": [[{ "node": "⚙️ Compile Mockup Results", "type": "main", "index": 0 }]] },
+    "⚙️ Compile Mockup Results": {
+      "main": [[
+        { "node": "📊 Update Generated_PDFs with Mockup URLs", "type": "main", "index": 0 },
+        { "node": "🔌 Trigger WF03 — Publish Product", "type": "main", "index": 0 },
+        { "node": "🗑️ Cleanup Temp Files", "type": "main", "index": 0 }
+      ]]
+    }
+  },
+  "settings": { "executionOrder": "v1", "saveManualExecutions": true, "executionTimeout": 600 },
+  "meta": {
+    "description": "WF13: Mockup Generator. Generates 5-6 professional Etsy listing images using Python Pillow — zero external APIs, zero cost. Images: Hero (clean product title on brand background), Whats Included (checklist), How To Use (3 steps), Page Preview (actual planner pages), Instant Download (trust badge), Brand Closer. 2000x2000px PNG, Etsy-optimized. Uploads to Cloudflare R2. Triggers WF03 to publish. Cleans up temp files.",
+    "vps_setup_required": [
+      "pip3 install Pillow --break-system-packages",
+      "apt-get install -y poppler-utils (for pdftoppm page extraction)",
+      "apt-get install -y fonts-dejavu-core (for text rendering)",
+      "rclone configured with R2 remote named 'r2'"
+    ]
+  }
+}

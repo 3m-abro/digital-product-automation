@@ -1,0 +1,230 @@
+{
+  "name": "09B — Video Renderer (FFmpeg + HeyGen Avatar)",
+  "nodes": [
+
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "render-videos",
+        "responseMode": "onReceived",
+        "responseData": "allEntries"
+      },
+      "id": "node_webhook",
+      "name": "🔔 Webhook — Receive Video Jobs",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1.1,
+      "position": [200, 400]
+    },
+
+    {
+      "parameters": {
+        "jsCode": "const body = $input.first().json.body || $input.first().json;\nconst videos = body.videos || [];\nconst ffmpegCmds = body.ffmpeg_commands || [];\nconst productId = body.product_id;\nconst storeUrls = body.store_urls || {};\nconst brand = body.brand || {};\n\n// Separate avatar script from text-overlay videos\nconst avatarScript = videos.find(v => v.video_id === 'ugc_avatar_script');\nconst textVideos = videos.filter(v => v.video_id !== 'ugc_avatar_script');\n\nreturn [{ json: {\n  product_id: productId,\n  text_videos: textVideos,\n  avatar_script: avatarScript || null,\n  ffmpeg_commands: ffmpegCmds,\n  store_urls: storeUrls,\n  brand,\n  primary_color: brand.colors?.primary || '#1B2A4A',\n  accent_color: brand.colors?.accent || '#C9A84C',\n  has_avatar: !!avatarScript,\n  _received_at: new Date().toISOString()\n}}];"
+      },
+      "id": "node_prep",
+      "name": "⚙️ Prep Video Jobs",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [460, 400]
+    },
+
+    {
+      "parameters": {
+        "command": "=# SETUP CHECK\necho \"Checking required tools...\"\nffmpeg -version 2>/dev/null | head -1 || echo \"MISSING: ffmpeg\"\nfc-list | grep -i 'open' | head -1 || echo \"WARNING: OpenSans font may be missing\"\n\n# Create working directory\nmkdir -p /tmp/videos_{{ $json.product_id }}\ncd /tmp/videos_{{ $json.product_id }}\n\n# Generate background slide for text overlay videos\n# Navy gradient background 1080x1920 (vertical)\nffmpeg -y -f lavfi \\\n  -i \"color=c=0x1B2A4A:size=1080x1920:rate=30\" \\\n  -vf \"drawbox=x=0:y=0:w=1080:h=8:color=0xC9A84C:t=fill\" \\\n  -frames:v 1 /tmp/videos_{{ $json.product_id }}/bg_navy.jpg 2>&1\n\necho \"SETUP_COMPLETE|/tmp/videos_{{ $json.product_id }}\""
+      },
+      "id": "node_setup",
+      "name": "💻 Setup Video Environment",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [720, 300],
+      "notes": "Creates working directory and generates brand background image. Requires: apt-get install ffmpeg fonts-open-sans"
+    },
+
+    {
+      "parameters": {
+        "jsCode": "// Build FFmpeg text-overlay commands for each video\nconst data = $input.first().json;\nconst videos = data.text_videos || [];\nconst productId = data.product_id;\nconst primary = (data.primary_color || '#1B2A4A').replace('#', '0x');\nconst accent = (data.accent_color || '#C9A84C').replace('#', '0x');\nconst white = '0xFFFFFF';\nconst workDir = `/tmp/videos_${productId}`;\n\nconst commands = [];\n\nfor (const video of videos) {\n  const scenes = video.scenes || [];\n  const duration = video.duration_seconds || 15;\n  const outputFile = `${workDir}/${video.video_id}.mp4`;\n  \n  if (video.style === 'text_overlay_product_reveal' || video.style === 'tips_text_overlay') {\n    // Build drawtext filter chain\n    const textFilters = scenes.map((scene, i) => {\n      const text = (scene.text_overlay || '').replace(/'/g, \"'\\\\''\").substring(0, 60);\n      const y = scene.position === 'bottom' ? 'h-150' : scene.position === 'top' ? '100' : '(h-text_h)/2';\n      const fontSize = scene.fontsize || 56;\n      const fadeIn = `alpha='if(lt(t,${scene.timestamp_start}),0,if(lt(t,${scene.timestamp_start+0.5}),(t-${scene.timestamp_start})/0.5,if(lt(t,${scene.timestamp_end-0.3}),1,max(0,(${scene.timestamp_end}-t)/0.3))))'`;\n      return `drawtext=text='${text}':fontsize=${fontSize}:fontcolor=${white}:x=(w-text_w)/2:y=${y}:enable='between(t,${scene.timestamp_start},${scene.timestamp_end})':${fadeIn}:box=1:boxcolor=${primary}@0.5:boxborderw=20`;\n    }).join(',');\n    \n    const cmd = `ffmpeg -y -loop 1 -i ${workDir}/bg_navy.jpg -vf \"scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:${primary},drawbox=x=0:y=0:w=1080:h=8:color=${accent}:t=fill,${textFilters}\" -c:v libx264 -t ${duration} -r 30 -pix_fmt yuv420p -crf 23 ${outputFile}`;\n    \n    commands.push({\n      video_id: video.video_id,\n      platform: video.platform,\n      command: cmd,\n      output_file: outputFile,\n      duration: duration,\n      caption: video.caption,\n      hashtags: video.hashtags,\n      title: video.title || null,\n      description: video.description || null\n    });\n    \n  } else if (video.style === 'product_walkthrough_text') {\n    // YouTube Shorts — slightly longer, more text\n    const cmd = `ffmpeg -y -loop 1 -i ${workDir}/bg_navy.jpg -vf \"scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:${primary},drawbox=x=0:y=0:w=1080:h=8:color=${accent}:t=fill,drawtext=text='${(video.hook_words || 'WATCH THIS').replace(/'/g, \"'\\\\''\").substring(0,30)}':fontsize=72:fontcolor=${white}:x=(w-text_w)/2:y=(h-text_h)/2:enable='between(t,0,5)',drawtext=text='Link in bio':fontsize=48:fontcolor=${accent}:x=(w-text_w)/2:y=h-200:enable='between(t,${duration-5},${duration})'\" -c:v libx264 -t ${duration} -r 30 -pix_fmt yuv420p -crf 23 ${outputFile}`;\n    \n    commands.push({\n      video_id: video.video_id,\n      platform: video.platform,\n      command: cmd,\n      output_file: outputFile,\n      duration: duration,\n      title: video.title,\n      description: video.description,\n      tags: video.tags\n    });\n  }\n}\n\n// Also add product zoom animation\ncommands.push({\n  video_id: 'product_zoom_pan',\n  platform: 'all',\n  command: `ffmpeg -y -loop 1 -i ${workDir}/bg_navy.jpg -vf \"scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,zoompan=z='min(zoom+0.0015,1.25)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=240:s=1080x1920,setsar=1\" -c:v libx264 -t 8 -r 30 -pix_fmt yuv420p ${workDir}/product_zoom.mp4`,\n  output_file: `${workDir}/product_zoom.mp4`,\n  duration: 8,\n  description: 'Product zoom animation for stories/ads'\n});\n\nreturn commands.map(cmd => ({ json: { ...data, video_job: cmd } }));"
+      },
+      "id": "node_build_commands",
+      "name": "⚙️ Build FFmpeg Commands",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [720, 500],
+      "notes": "Builds precise FFmpeg commands for each video type. Text overlays with fade-in/fade-out animations. Brand colors embedded. Outputs separate items for parallel processing."
+    },
+
+    {
+      "parameters": {
+        "command": "={{ $json.video_job.command }}\n\nif [ -f '{{ $json.video_job.output_file }}' ]; then\n  SIZE=$(ls -lh '{{ $json.video_job.output_file }}' | awk '{print $5}')\n  echo \"VIDEO_OK|{{ $json.video_job.output_file }}|$SIZE\"\nelse\n  echo \"VIDEO_FAIL|{{ $json.video_job.output_file }}\"\nfi"
+      },
+      "id": "node_render_video",
+      "name": "💻 Render Video (FFmpeg)",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [980, 500],
+      "notes": "Executes FFmpeg command for each video. Runs in parallel for all video types. Each video renders independently."
+    },
+
+    {
+      "parameters": {
+        "jsCode": "// Parse render result\nconst result = $input.first().json;\nconst stdout = result.stdout || '';\nconst success = stdout.includes('VIDEO_OK');\nconst parts = stdout.split('|');\n\nreturn [{ json: {\n  ...result,\n  video_rendered: success,\n  video_path: success ? parts[1] : null,\n  video_size: success ? parts[2] : null,\n  video_id: result.video_job?.video_id,\n  platform: result.video_job?.platform,\n  caption: result.video_job?.caption,\n  hashtags: result.video_job?.hashtags,\n  title: result.video_job?.title,\n  description: result.video_job?.description\n}}];"
+      },
+      "id": "node_parse_render",
+      "name": "⚙️ Parse Render Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1240, 500]
+    },
+
+    {
+      "parameters": {
+        "conditions": {
+          "conditions": [{
+            "leftValue": "={{ $json.has_avatar }}",
+            "rightValue": true,
+            "operator": { "type": "boolean", "operation": "true" }
+          }]
+        }
+      },
+      "id": "node_check_avatar",
+      "name": "🔀 Avatar Enabled?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [720, 750],
+      "notes": "Only calls HeyGen API if avatar is enabled. Set has_avatar = false to skip and save API credits."
+    },
+
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.heygen.com/v2/video/generate",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "X-Api-Key", "value": "YOUR_HEYGEN_API_KEY" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "body": "={\n  \"video_inputs\": [\n    {\n      \"character\": {\n        \"type\": \"avatar\",\n        \"avatar_id\": \"YOUR_HEYGEN_AVATAR_ID\",\n        \"avatar_style\": \"normal\"\n      },\n      \"voice\": {\n        \"type\": \"text\",\n        \"input_text\": \"{{ $json.avatar_script?.avatar_script || 'Check out this amazing digital product that will transform your productivity.' }}\",\n        \"voice_id\": \"YOUR_HEYGEN_VOICE_ID\",\n        \"speed\": 1.0\n      },\n      \"background\": {\n        \"type\": \"color\",\n        \"value\": \"#F8F9FC\"\n      }\n    }\n  ],\n  \"aspect_ratio\": \"9:16\",\n  \"test\": false,\n  \"caption\": false\n}",
+        "options": {}
+      },
+      "id": "node_heygen_create",
+      "name": "🤖 HeyGen — Create Avatar Video",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [980, 750],
+      "notes": "SETUP: Sign up at heygen.com. Get API key from heygen.com/api-key. Choose an avatar ID from their library (select modest/professional appearance). Choose a voice ID. Free tier: 1 min/month. Paid: $29/month for 15 min."
+    },
+
+    {
+      "parameters": {
+        "amount": 120,
+        "unit": "seconds"
+      },
+      "id": "node_wait_heygen",
+      "name": "⏳ Wait 2 Min for HeyGen",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1,
+      "position": [1240, 750],
+      "notes": "HeyGen typically takes 1-3 minutes to render avatar video. Adjust wait time as needed."
+    },
+
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://api.heygen.com/v1/video_status.get?video_id={{ $json.data.video_id }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "X-Api-Key", "value": "YOUR_HEYGEN_API_KEY" }
+          ]
+        },
+        "options": {}
+      },
+      "id": "node_heygen_poll",
+      "name": "🔍 Poll HeyGen Status",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1500, 750]
+    },
+
+    {
+      "parameters": {
+        "jsCode": "// Collect all rendered videos and avatar\nconst allVideos = $input.all();\nconst renderedVideos = [];\n\nfor (const item of allVideos) {\n  const data = item.json;\n  if (data.video_rendered && data.video_path) {\n    renderedVideos.push({\n      video_id: data.video_id,\n      platform: data.platform,\n      file_path: data.video_path,\n      file_size: data.video_size,\n      caption: data.caption,\n      hashtags: data.hashtags,\n      title: data.title,\n      description: data.description,\n      type: 'text_overlay'\n    });\n  }\n  // Check for HeyGen avatar result\n  if (data.data?.video_url) {\n    renderedVideos.push({\n      video_id: 'ugc_avatar',\n      platform: 'all',\n      video_url: data.data.video_url,\n      type: 'avatar',\n      disclosure: 'AI-generated spokesperson | Not a real person'\n    });\n  }\n}\n\nreturn [{ json: {\n  product_id: $('⚙️ Prep Video Jobs').first().json.product_id,\n  rendered_videos: renderedVideos,\n  total_rendered: renderedVideos.length,\n  has_avatar: renderedVideos.some(v => v.type === 'avatar'),\n  store_urls: $('⚙️ Prep Video Jobs').first().json.store_urls,\n  _completed_at: new Date().toISOString()\n}}];"
+      },
+      "id": "node_collect_videos",
+      "name": "📦 Collect All Rendered Videos",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1760, 560]
+    },
+
+    {
+      "parameters": {
+        "operation": "upload",
+        "name": "={{ $json.video_id }}_{{ $json.product_id }}.mp4",
+        "folderId": "YOUR_GOOGLE_DRIVE_VIDEOS_FOLDER_ID",
+        "options": {}
+      },
+      "id": "node_upload_video",
+      "name": "☁️ Upload Videos to Drive",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [2020, 560],
+      "notes": "Uploads all rendered MP4 files to Google Drive Videos folder."
+    },
+
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": { "value": "YOUR_GOOGLE_SHEET_ID_HERE" },
+        "sheetName": { "value": "Video_Library" },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Product_ID": "={{ $json.product_id }}",
+            "Total_Videos": "={{ $json.total_rendered }}",
+            "Has_Avatar": "={{ $json.has_avatar }}",
+            "Videos_Summary": "={{ $json.rendered_videos.map(v => v.video_id + ':' + v.platform).join(' | ') }}",
+            "Drive_Folder": "={{ 'YOUR_GOOGLE_DRIVE_VIDEOS_FOLDER_ID' }}",
+            "Status": "Videos Ready",
+            "Completed_At": "={{ $json._completed_at }}"
+          }
+        },
+        "options": {}
+      },
+      "id": "node_log_videos",
+      "name": "📊 Log Videos to Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [2280, 560]
+    }
+
+  ],
+  "connections": {
+    "🔔 Webhook — Receive Video Jobs": { "main": [[{ "node": "⚙️ Prep Video Jobs", "type": "main", "index": 0 }]] },
+    "⚙️ Prep Video Jobs": {
+      "main": [[
+        { "node": "💻 Setup Video Environment", "type": "main", "index": 0 },
+        { "node": "🔀 Avatar Enabled?", "type": "main", "index": 0 }
+      ]]
+    },
+    "💻 Setup Video Environment": { "main": [[{ "node": "⚙️ Build FFmpeg Commands", "type": "main", "index": 0 }]] },
+    "⚙️ Build FFmpeg Commands": { "main": [[{ "node": "💻 Render Video (FFmpeg)", "type": "main", "index": 0 }]] },
+    "💻 Render Video (FFmpeg)": { "main": [[{ "node": "⚙️ Parse Render Result", "type": "main", "index": 0 }]] },
+    "⚙️ Parse Render Result": { "main": [[{ "node": "📦 Collect All Rendered Videos", "type": "main", "index": 0 }]] },
+    "🔀 Avatar Enabled?": {
+      "main": [
+        [{ "node": "🤖 HeyGen — Create Avatar Video", "type": "main", "index": 0 }],
+        [{ "node": "📦 Collect All Rendered Videos", "type": "main", "index": 0 }]
+      ]
+    },
+    "🤖 HeyGen — Create Avatar Video": { "main": [[{ "node": "⏳ Wait 2 Min for HeyGen", "type": "main", "index": 0 }]] },
+    "⏳ Wait 2 Min for HeyGen": { "main": [[{ "node": "🔍 Poll HeyGen Status", "type": "main", "index": 0 }]] },
+    "🔍 Poll HeyGen Status": { "main": [[{ "node": "📦 Collect All Rendered Videos", "type": "main", "index": 0 }]] },
+    "📦 Collect All Rendered Videos": { "main": [[{ "node": "☁️ Upload Videos to Drive", "type": "main", "index": 0 }]] },
+    "☁️ Upload Videos to Drive": { "main": [[{ "node": "📊 Log Videos to Sheet", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1", "saveManualExecutions": true, "executionTimeout": 1800 },
+  "meta": { "description": "Workflow 09B: Video Renderer. Generates text-overlay videos via FFmpeg (TikTok 15s, Reels 30s, YouTube Shorts 45s, product zoom 8s). Optional HeyGen avatar UGC video. Uploads all to Google Drive. Logs to Video_Library sheet." }
+}

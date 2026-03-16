@@ -1,0 +1,293 @@
+{
+  "name": "02 — Approval Checker + Product Creation Agent",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 6
+            }
+          ]
+        }
+      },
+      "id": "node_approval_trigger",
+      "name": "⏰ Check Approvals Every 6 Hours",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [200, 300],
+      "notes": "Polls Google Sheets every 6 hours to check if you've approved any products. Change interval as needed."
+    },
+    {
+      "parameters": {
+        "operation": "read",
+        "documentId": {
+          "value": "YOUR_GOOGLE_SHEET_ID_HERE"
+        },
+        "sheetName": {
+          "value": "Research_Opportunities"
+        },
+        "filtersUI": {
+          "values": [
+            {
+              "lookupColumn": "APPROVED",
+              "lookupValue": "YES"
+            },
+            {
+              "lookupColumn": "Status",
+              "lookupValue": "Research Complete"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "node_read_approved",
+      "name": "📊 Read Approved Products from Sheets",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [440, 300],
+      "notes": "Reads rows where APPROVED=YES and Status='Research Complete'. These are products you approved for creation."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "check_has_items",
+              "leftValue": "={{ $items().length }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "node_check_items",
+      "name": "🔀 Any Approved Products?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [700, 300],
+      "notes": "IF there are approved products → continue to creation. IF not → stop workflow silently."
+    },
+    {
+      "parameters": {
+        "jsCode": "// No approved products found - exit gracefully\nreturn [{ json: { status: 'NO_ACTION', message: 'No approved products found this cycle. Waiting for your approval in Google Sheets.' } }];"
+      },
+      "id": "node_no_action",
+      "name": "💤 No Action Needed",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [700, 520],
+      "notes": "Graceful exit when no products are approved yet."
+    },
+    {
+      "parameters": {
+        "model": "llama3",
+        "messages": {
+          "values": [
+            {
+              "role": "system",
+              "content": "You are an expert digital product creator and copywriter. You create complete, ready-to-sell digital product packages including compelling titles, SEO-optimized descriptions, tags, pricing strategy, and detailed creation guides. You specialize in Etsy, Gumroad, and Payhip listings. Always respond in valid JSON only."
+            },
+            {
+              "role": "user",
+              "content": "=Create a complete, ready-to-publish digital product package for this approved product:\n\nProduct: {{$json.Product_Name}}\nCategory: {{$json.Category}}\nTarget Keyword: {{$json.Target_Keyword}}\nDescription: {{$json.Description}}\nCreation Tool: {{$json.Creation_Tool}}\nPrice Range: ${{$json.Price_Min}} - ${{$json.Price_Max}}\nCreation Steps: {{$json.Creation_Steps}}\n\nCreate a COMPLETE product package. Respond ONLY with this JSON:\n{\n  \"product_id\": \"unique_slug_here\",\n  \"original_concept\": \"{{$json.Product_Name}}\",\n  \"category\": \"{{$json.Category}}\",\n  \n  \"listing\": {\n    \"title\": \"SEO-optimized listing title (max 140 chars)\",\n    \"subtitle\": \"catchy subtitle\",\n    \"price_usd\": 9.99,\n    \"description_short\": \"2-3 sentence product description for Gumroad/Payhip\",\n    \"description_long\": \"Full 200-word Etsy-style description with benefits, what's included, and usage\",\n    \"tags\": [\"tag1\", \"tag2\", \"tag3\", \"tag4\", \"tag5\", \"tag6\", \"tag7\", \"tag8\", \"tag9\", \"tag10\", \"tag11\", \"tag12\", \"tag13\"],\n    \"category_etsy\": \"Digital Downloads\",\n    \"file_formats\": [\"PDF\", \"PNG\"],\n    \"instant_download\": true\n  },\n  \n  \"creation_guide\": {\n    \"tool\": \"{{$json.Creation_Tool}}\",\n    \"estimated_time\": \"X hours\",\n    \"difficulty\": \"Easy|Medium\",\n    \"steps\": [\n      {\"step\": 1, \"action\": \"detailed step\", \"tool_used\": \"specific tool\", \"tip\": \"pro tip\"}\n    ],\n    \"ai_prompts\": [\n      {\"purpose\": \"what this prompt generates\", \"prompt\": \"exact AI prompt to use\"}\n    ]\n  },\n  \n  \"social_content\": {\n    \"hook_short\": \"15-word hook for TikTok/Reels\",\n    \"hook_long\": \"30-word hook for Facebook\",\n    \"instagram_caption\": \"Full IG caption with emojis and hashtags\",\n    \"facebook_post\": \"Facebook post text\",\n    \"pinterest_description\": \"Pinterest pin description with keywords\",\n    \"tiktok_script\": \"15-second TikTok script (Hook + Value + CTA)\",\n    \"youtube_title\": \"YouTube Shorts title\",\n    \"youtube_description\": \"YouTube video description\",\n    \"hashtags_general\": [\"#hashtag1\", \"#hashtag2\", \"#hashtag3\", \"#hashtag4\", \"#hashtag5\"],\n    \"hashtags_niche\": [\"#nichetag1\", \"#nichetag2\", \"#nichetag3\", \"#nichetag4\", \"#nichetag5\"]\n  }\n}"
+            }
+          ]
+        },
+        "options": {
+          "temperature": 0.8
+        }
+      },
+      "id": "node_ollama_creator",
+      "name": "🧠 Ollama Creator Agent (llama3)",
+      "type": "n8n-nodes-base.ollama",
+      "typeVersion": 1,
+      "position": [960, 300],
+      "notes": "llama3 generates the complete product package: listing copy, creation guide, AI prompts, and ALL social media content in one call."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse Ollama creator response\nconst rawResponse = $input.first().json;\n\nlet productPackage;\ntry {\n  const content = rawResponse?.message?.content || rawResponse?.response || '';\n  const jsonMatch = content.match(/```json\\n?([\\s\\S]*?)\\n?```/) || \n                    content.match(/({[\\s\\S]*})/);\n  const jsonStr = jsonMatch ? jsonMatch[1] || jsonMatch[0] : content;\n  productPackage = JSON.parse(jsonStr.trim());\n} catch(e) {\n  productPackage = {\n    error: true,\n    error_message: e.message,\n    raw_response: rawResponse?.message?.content?.substring(0, 500)\n  };\n}\n\n// Add workflow metadata\nproductPackage.created_at = new Date().toISOString();\nproductPackage.publish_status = 'ready';\nproductPackage.publish_etsy = false;\nproductPackage.publish_gumroad = false;\nproductPackage.publish_payhip = false;\n\nreturn [{ json: productPackage }];"
+      },
+      "id": "node_parse_product",
+      "name": "⚙️ Parse Product Package",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1220, 300],
+      "notes": "Safely parses the product package from Ollama. Adds publish status flags."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Generate phi3-optimized image generation prompts for the product\n// phi3 is great for structured, precise prompt generation\nconst product = $input.first().json;\n\nconst imagePromptRequest = {\n  product_id: product.product_id,\n  product_title: product.listing?.title,\n  category: product.category,\n  prompts_needed: [\n    'product_mockup',\n    'listing_thumbnail',\n    'social_preview'\n  ]\n};\n\nreturn [{ json: imagePromptRequest }];"
+      },
+      "id": "node_prep_image_prompts",
+      "name": "🖼️ Prep Image Prompt Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1480, 200],
+      "notes": "Prepares request for phi3 to generate image prompts for Leonardo.ai or Stable Diffusion."
+    },
+    {
+      "parameters": {
+        "model": "phi3",
+        "messages": {
+          "values": [
+            {
+              "role": "system",
+              "content": "You are an expert at writing image generation prompts for digital product mockups. You write prompts for Leonardo.ai, DALL-E, and Stable Diffusion. Always respond in valid JSON only."
+            },
+            {
+              "role": "user",
+              "content": "=Generate image prompts for this digital product:\n\nProduct: {{$json.product_title}}\nCategory: {{$json.category}}\n\nRespond ONLY with this JSON:\n{\n  \"product_mockup_prompt\": \"detailed prompt for a professional product mockup image showing the digital product on a device or printed\",\n  \"thumbnail_prompt\": \"prompt for eye-catching Etsy/Gumroad listing thumbnail, clean background, professional\",\n  \"social_prompt\": \"prompt for social media preview image, lifestyle shot style\",\n  \"negative_prompt\": \"blurry, low quality, watermark, text overlay, distorted\",\n  \"style_notes\": \"brief note on color palette and style to maintain brand consistency\"\n}"
+            }
+          ]
+        },
+        "options": {
+          "temperature": 0.6
+        }
+      },
+      "id": "node_phi3_image_prompts",
+      "name": "🧠 phi3 — Generate Image Prompts",
+      "type": "n8n-nodes-base.ollama",
+      "typeVersion": 1,
+      "position": [1740, 200],
+      "notes": "phi3 generates precise image prompts. Use these prompts in Leonardo.ai free tier or Stable Diffusion to create product visuals."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Merge product package with image prompts\nconst productPackage = $('⚙️ Parse Product Package').first().json;\nconst imagePromptsRaw = $input.first().json;\n\nlet imagePrompts;\ntry {\n  const content = imagePromptsRaw?.message?.content || imagePromptsRaw?.response || '';\n  const jsonMatch = content.match(/```json\\n?([\\s\\S]*?)\\n?```/) || \n                    content.match(/({[\\s\\S]*})/);\n  const jsonStr = jsonMatch ? jsonMatch[1] || jsonMatch[0] : content;\n  imagePrompts = JSON.parse(jsonStr.trim());\n} catch(e) {\n  imagePrompts = { error: 'Could not parse image prompts' };\n}\n\n// Build the complete product record\nconst completeProduct = {\n  ...productPackage,\n  image_prompts: imagePrompts,\n  \n  // Ready for publishing\n  ready_to_publish: true,\n  publish_checklist: {\n    create_product_files: false,\n    upload_to_etsy: false,\n    upload_to_gumroad: false,\n    upload_to_payhip: false,\n    post_instagram: false,\n    post_facebook: false,\n    post_tiktok: false,\n    post_pinterest: false,\n    post_youtube: false\n  }\n};\n\nreturn [{ json: completeProduct }];"
+      },
+      "id": "node_merge_complete",
+      "name": "🔀 Build Complete Product Record",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2000, 300],
+      "notes": "Merges product listing + image prompts into one complete record for publishing."
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "value": "YOUR_GOOGLE_SHEET_ID_HERE"
+        },
+        "sheetName": {
+          "value": "Products_Ready"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Product_ID": "={{ $json.product_id }}",
+            "Title": "={{ $json.listing.title }}",
+            "Category": "={{ $json.category }}",
+            "Price": "={{ $json.listing.price_usd }}",
+            "Short_Description": "={{ $json.listing.description_short }}",
+            "Tags": "={{ $json.listing.tags.join(', ') }}",
+            "Image_Prompt_Mockup": "={{ $json.image_prompts.product_mockup_prompt }}",
+            "Image_Prompt_Thumbnail": "={{ $json.image_prompts.thumbnail_prompt }}",
+            "Image_Prompt_Social": "={{ $json.image_prompts.social_prompt }}",
+            "IG_Caption": "={{ $json.social_content.instagram_caption }}",
+            "FB_Post": "={{ $json.social_content.facebook_post }}",
+            "TikTok_Script": "={{ $json.social_content.tiktok_script }}",
+            "Pinterest_Description": "={{ $json.social_content.pinterest_description }}",
+            "YouTube_Title": "={{ $json.social_content.youtube_title }}",
+            "Creation_Guide": "={{ JSON.stringify($json.creation_guide) }}",
+            "Status": "Ready to Publish",
+            "Created_At": "={{ $json.created_at }}",
+            "Published_Etsy": "NO",
+            "Published_Gumroad": "NO",
+            "Published_Payhip": "NO",
+            "Published_Social": "NO"
+          }
+        },
+        "options": {}
+      },
+      "id": "node_write_products_sheet",
+      "name": "📊 Write to Products_Ready Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [2260, 300],
+      "notes": "Writes the complete product record to the Products_Ready tab. This feeds into Workflow 3 (Publishing)."
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "documentId": {
+          "value": "YOUR_GOOGLE_SHEET_ID_HERE"
+        },
+        "sheetName": {
+          "value": "Research_Opportunities"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Status": "Creation Complete - Ready to Publish"
+          }
+        },
+        "where": {
+          "values": [
+            {
+              "lookupColumn": "Product_Name",
+              "lookupValue": "={{ $json.original_concept }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "node_update_status",
+      "name": "📊 Update Research Sheet Status",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [2520, 300],
+      "notes": "Updates the original research row status to 'Creation Complete' so you don't process it again."
+    }
+  ],
+  "connections": {
+    "⏰ Check Approvals Every 6 Hours": {
+      "main": [[{ "node": "📊 Read Approved Products from Sheets", "type": "main", "index": 0 }]]
+    },
+    "📊 Read Approved Products from Sheets": {
+      "main": [[{ "node": "🔀 Any Approved Products?", "type": "main", "index": 0 }]]
+    },
+    "🔀 Any Approved Products?": {
+      "main": [
+        [{ "node": "🧠 Ollama Creator Agent (llama3)", "type": "main", "index": 0 }],
+        [{ "node": "💤 No Action Needed", "type": "main", "index": 0 }]
+      ]
+    },
+    "🧠 Ollama Creator Agent (llama3)": {
+      "main": [[{ "node": "⚙️ Parse Product Package", "type": "main", "index": 0 }]]
+    },
+    "⚙️ Parse Product Package": {
+      "main": [[{ "node": "🖼️ Prep Image Prompt Request", "type": "main", "index": 0 }]]
+    },
+    "🖼️ Prep Image Prompt Request": {
+      "main": [[{ "node": "🧠 phi3 — Generate Image Prompts", "type": "main", "index": 0 }]]
+    },
+    "🧠 phi3 — Generate Image Prompts": {
+      "main": [[{ "node": "🔀 Build Complete Product Record", "type": "main", "index": 0 }]]
+    },
+    "🔀 Build Complete Product Record": {
+      "main": [[{ "node": "📊 Write to Products_Ready Sheet", "type": "main", "index": 0 }]]
+    },
+    "📊 Write to Products_Ready Sheet": {
+      "main": [[{ "node": "📊 Update Research Sheet Status", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true
+  },
+  "meta": {
+    "description": "Phase 2: Approval gate + product creation. Reads approved products from Sheets, uses llama3 to create full product packages and phi3 for image prompts. Writes everything to Products_Ready tab."
+  }
+}

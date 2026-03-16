@@ -1,0 +1,258 @@
+{
+  "name": "01 — Research Agent (Weekly Trend Finder)",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "weeks",
+              "weeksInterval": 1,
+              "triggerAtDay": [1],
+              "triggerAtHour": 6
+            }
+          ]
+        }
+      },
+      "id": "node_schedule_trigger",
+      "name": "⏰ Weekly Trigger (Monday 6AM)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [200, 300],
+      "notes": "Fires every Monday at 6AM. Adjust timezone in n8n settings."
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "https://www.etsy.com/search?q=digital+download&order=most_relevant&ship_to=US",
+        "options": {
+          "headers": {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+          },
+          "timeout": 15000
+        },
+        "sendHeaders": true
+      },
+      "id": "node_etsy_scrape",
+      "name": "🔍 Scrape Etsy Trending",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [440, 200],
+      "notes": "Fetches Etsy trending digital downloads page. Raw HTML returned for parsing."
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "https://gumroad.com/discover?sort=featured&tags=digital",
+        "options": {
+          "headers": {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+          },
+          "timeout": 15000
+        },
+        "sendHeaders": true
+      },
+      "id": "node_gumroad_scrape",
+      "name": "🔍 Scrape Gumroad Trending",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [440, 340],
+      "notes": "Fetches Gumroad featured digital products."
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "https://www.creativefabrica.com/freebies/?orderby=popular",
+        "options": {
+          "headers": {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+          },
+          "timeout": 15000
+        },
+        "sendHeaders": true
+      },
+      "id": "node_cf_scrape",
+      "name": "🔍 Scrape Creative Fabrica",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [440, 480],
+      "notes": "Fetches Creative Fabrica popular freebies for trend insight."
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "https://trends.google.com/trends/api/dailytrends?hl=en-US&tz=-300&geo=US&ns=15",
+        "options": {
+          "timeout": 10000
+        },
+        "sendHeaders": false
+      },
+      "id": "node_google_trends",
+      "name": "📈 Google Trends API",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [440, 620],
+      "notes": "Pulls daily trending search topics from Google Trends. No API key needed."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Combine all scraped data into a single research package\n// In production, add a proper HTML parser library or use cheerio via Code node\n\nconst etsyData = $('🔍 Scrape Etsy Trending').first().json;\nconst gumroadData = $('🔍 Scrape Gumroad Trending').first().json;\nconst cfData = $('🔍 Scrape Creative Fabrica').first().json;\nconst trendsData = $('📈 Google Trends API').first().json;\n\n// Build research summary for Ollama to analyze\nconst researchPackage = {\n  timestamp: new Date().toISOString(),\n  week: `Week of ${new Date().toLocaleDateString('en-US', {month:'long', day:'numeric', year:'numeric'})}`,\n  sources: {\n    etsy: {\n      url: 'https://www.etsy.com/search?q=digital+download&order=most_relevant',\n      status: etsyData ? 'fetched' : 'failed',\n      contentLength: etsyData?.body?.length || 0\n    },\n    gumroad: {\n      url: 'https://gumroad.com/discover?sort=featured&tags=digital',\n      status: gumroadData ? 'fetched' : 'failed',\n      contentLength: gumroadData?.body?.length || 0\n    },\n    creativeFabrica: {\n      url: 'https://www.creativefabrica.com/freebies/?orderby=popular',\n      status: cfData ? 'fetched' : 'failed',\n      contentLength: cfData?.body?.length || 0\n    },\n    googleTrends: {\n      status: trendsData ? 'fetched' : 'failed'\n    }\n  },\n  // Seed keywords for Ollama to build on - expanded weekly by AI\n  trendingCategories: [\n    'printable wall art',\n    'notion template productivity',\n    'ai generated coloring pages',\n    'resume template canva',\n    'budget planner printable',\n    'social media template pack',\n    'ebook minimalist journal',\n    'digital planner ipad',\n    'affirmation card printable',\n    'logo design bundle'\n  ],\n  productTypes: ['Printables/Templates', 'AI Art/Images', 'eBooks/Guides', 'Notion/Canva Templates'],\n  freeAiTools: [\n    'Canva Free (templates, graphics)',\n    'Adobe Express Free (design)',\n    'DALL-E via ChatGPT Free (AI images)',\n    'Leonardo.ai Free (AI art)',\n    'Stable Diffusion (local/free)',\n    'Gamma.app Free (ebooks/presentations)',\n    'Notion Free (templates)',\n    'Google Docs (ebooks)',\n    'Ollama Local (text generation)'\n  ]\n};\n\nreturn [{ json: researchPackage }];"
+      },
+      "id": "node_merge_research",
+      "name": "🔀 Merge & Package Research Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [700, 400],
+      "notes": "Combines all scraped data into one structured package for Ollama to analyze."
+    },
+    {
+      "parameters": {
+        "model": "mistral",
+        "messages": {
+          "values": [
+            {
+              "role": "system",
+              "content": "You are an expert digital product market researcher specializing in Etsy, Gumroad, and digital marketplaces. You identify trending digital products that can be recreated quickly using free AI tools like Canva, Leonardo.ai, Ollama, and Gamma.app. You always respond in valid JSON only."
+            },
+            {
+              "role": "user",
+              "content": "=Based on these trending categories and market data: {{JSON.stringify($json)}}\n\nIdentify the TOP 8 digital product opportunities this week. For each product:\n1. Analyze which categories are hottest right now\n2. Score recreatability (1-10, higher = easier to remake with free AI tools)\n3. Estimate potential price range\n4. Suggest the exact free AI tool to create it\n5. Give a specific product idea (not generic)\n\nRespond ONLY with this JSON structure:\n{\n  \"research_week\": \"string\",\n  \"market_insights\": \"2-3 sentence summary of trends\",\n  \"top_opportunities\": [\n    {\n      \"rank\": 1,\n      \"product_name\": \"specific product title\",\n      \"category\": \"Printables|AI Art|eBooks|Templates\",\n      \"trend_score\": 85,\n      \"recreatability_score\": 9,\n      \"estimated_price_min\": 3,\n      \"estimated_price_max\": 15,\n      \"creation_tool\": \"Canva Free\",\n      \"creation_time_hours\": 2,\n      \"target_keyword\": \"main SEO keyword\",\n      \"description\": \"what this product is and why it sells\",\n      \"creation_steps\": [\"step 1\", \"step 2\", \"step 3\"]\n    }\n  ]\n}"
+            }
+          ]
+        },
+        "options": {
+          "temperature": 0.7
+        }
+      },
+      "id": "node_ollama_research",
+      "name": "🧠 Ollama Research Agent (mistral)",
+      "type": "n8n-nodes-base.ollama",
+      "typeVersion": 1,
+      "position": [960, 400],
+      "notes": "Uses Mistral model to analyze trends and identify top 8 product opportunities. Requires Ollama running locally on port 11434."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse Ollama's JSON response safely\nconst rawResponse = $input.first().json;\n\nlet parsed;\ntry {\n  // Ollama returns message.content\n  const content = rawResponse?.message?.content || rawResponse?.response || '';\n  \n  // Extract JSON from response (handle markdown code blocks)\n  const jsonMatch = content.match(/```json\\n?([\\s\\S]*?)\\n?```/) || \n                    content.match(/({[\\s\\S]*})/);\n  \n  const jsonStr = jsonMatch ? jsonMatch[1] || jsonMatch[0] : content;\n  parsed = JSON.parse(jsonStr.trim());\n} catch(e) {\n  // Fallback structure if parsing fails\n  parsed = {\n    research_week: new Date().toLocaleDateString(),\n    market_insights: 'Unable to parse AI response - please check Ollama connection',\n    top_opportunities: []\n  };\n}\n\n// Add metadata\nparsed.generated_at = new Date().toISOString();\nparsed.status = 'pending_approval';\nparsed.workflow_version = '1.0';\n\nreturn [{ json: parsed }];"
+      },
+      "id": "node_parse_research",
+      "name": "⚙️ Parse Research Results",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1220, 400],
+      "notes": "Safely parses Ollama JSON response. Handles markdown code blocks and malformed JSON."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Flatten opportunities into individual rows for Google Sheets\nconst research = $input.first().json;\nconst rows = [];\n\nif (research.top_opportunities && research.top_opportunities.length > 0) {\n  for (const opp of research.top_opportunities) {\n    rows.push({\n      json: {\n        // Sheet columns\n        Week: research.research_week || new Date().toLocaleDateString(),\n        Rank: opp.rank,\n        Product_Name: opp.product_name,\n        Category: opp.category,\n        Trend_Score: opp.trend_score,\n        Recreatability_Score: opp.recreatability_score,\n        Price_Min: opp.estimated_price_min,\n        Price_Max: opp.estimated_price_max,\n        Creation_Tool: opp.creation_tool,\n        Creation_Hours: opp.creation_time_hours,\n        Target_Keyword: opp.target_keyword,\n        Description: opp.description,\n        Creation_Steps: (opp.creation_steps || []).join(' | '),\n        Market_Insights: research.market_insights,\n        // Approval columns\n        APPROVED: 'PENDING',\n        Notes: '',\n        Date_Added: new Date().toISOString(),\n        Status: 'Research Complete'\n      }\n    });\n  }\n} else {\n  rows.push({\n    json: {\n      Week: new Date().toLocaleDateString(),\n      Rank: 0,\n      Product_Name: 'ERROR - No opportunities found',\n      Status: 'Failed',\n      Date_Added: new Date().toISOString()\n    }\n  });\n}\n\nreturn rows;"
+      },
+      "id": "node_prep_sheets",
+      "name": "📋 Prep Rows for Google Sheets",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1480, 400],
+      "notes": "Converts the research array into individual rows, each with an APPROVED column set to PENDING."
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "value": "YOUR_GOOGLE_SHEET_ID_HERE"
+        },
+        "sheetName": {
+          "value": "Research_Opportunities"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Week": "={{ $json.Week }}",
+            "Rank": "={{ $json.Rank }}",
+            "Product_Name": "={{ $json.Product_Name }}",
+            "Category": "={{ $json.Category }}",
+            "Trend_Score": "={{ $json.Trend_Score }}",
+            "Recreatability_Score": "={{ $json.Recreatability_Score }}",
+            "Price_Min": "={{ $json.Price_Min }}",
+            "Price_Max": "={{ $json.Price_Max }}",
+            "Creation_Tool": "={{ $json.Creation_Tool }}",
+            "Creation_Hours": "={{ $json.Creation_Hours }}",
+            "Target_Keyword": "={{ $json.Target_Keyword }}",
+            "Description": "={{ $json.Description }}",
+            "Creation_Steps": "={{ $json.Creation_Steps }}",
+            "Market_Insights": "={{ $json.Market_Insights }}",
+            "APPROVED": "={{ $json.APPROVED }}",
+            "Notes": "={{ $json.Notes }}",
+            "Date_Added": "={{ $json.Date_Added }}",
+            "Status": "={{ $json.Status }}"
+          }
+        },
+        "options": {}
+      },
+      "id": "node_sheets_write",
+      "name": "📊 Write to Google Sheets (Research Tab)",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [1740, 400],
+      "notes": "SETUP REQUIRED: Replace YOUR_GOOGLE_SHEET_ID_HERE with your actual Sheet ID. Create a sheet tab named 'Research_Opportunities' with matching column headers."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Generate a human-readable summary for logging\nconst allRows = $input.all();\nconst summary = {\n  json: {\n    event: 'RESEARCH_COMPLETE',\n    timestamp: new Date().toISOString(),\n    products_found: allRows.length,\n    next_step: 'Go to Google Sheets > Research_Opportunities tab > Change APPROVED column to YES for products you want to create',\n    sheet_action_required: true,\n    message: `✅ Research complete! ${allRows.length} product opportunities written to Google Sheets. Open your sheet and mark APPROVED = YES for products to proceed to creation.`\n  }\n};\nreturn [summary];"
+      },
+      "id": "node_log_complete",
+      "name": "✅ Log Research Complete",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2000, 400],
+      "notes": "Final step of Phase 1. Logs completion. You now manually review Google Sheets and approve products."
+    }
+  ],
+  "connections": {
+    "node_schedule_trigger": {
+      "main": [
+        [
+          { "node": "node_etsy_scrape", "type": "main", "index": 0 },
+          { "node": "node_gumroad_scrape", "type": "main", "index": 0 },
+          { "node": "node_cf_scrape", "type": "main", "index": 0 },
+          { "node": "node_google_trends", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "node_etsy_scrape": {
+      "main": [[{ "node": "node_merge_research", "type": "main", "index": 0 }]]
+    },
+    "node_gumroad_scrape": {
+      "main": [[{ "node": "node_merge_research", "type": "main", "index": 1 }]]
+    },
+    "node_cf_scrape": {
+      "main": [[{ "node": "node_merge_research", "type": "main", "index": 2 }]]
+    },
+    "node_google_trends": {
+      "main": [[{ "node": "node_merge_research", "type": "main", "index": 3 }]]
+    },
+    "node_merge_research": {
+      "main": [[{ "node": "node_ollama_research", "type": "main", "index": 0 }]]
+    },
+    "node_ollama_research": {
+      "main": [[{ "node": "node_parse_research", "type": "main", "index": 0 }]]
+    },
+    "node_parse_research": {
+      "main": [[{ "node": "node_prep_sheets", "type": "main", "index": 0 }]]
+    },
+    "node_prep_sheets": {
+      "main": [[{ "node": "node_sheets_write", "type": "main", "index": 0 }]]
+    },
+    "node_sheets_write": {
+      "main": [[{ "node": "node_log_complete", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": ""
+  },
+  "meta": {
+    "templateCredsSetupCompleted": false,
+    "description": "Phase 1: Weekly research agent. Scrapes Etsy, Gumroad, Creative Fabrica. Uses Mistral via Ollama to identify top 8 trending digital product opportunities. Writes results to Google Sheets for human approval."
+  }
+}

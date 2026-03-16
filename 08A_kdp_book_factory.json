@@ -1,0 +1,450 @@
+{
+  "name": "08A — KDP Book Factory (Content Generator)",
+  "nodes": [
+
+    {
+      "parameters": {
+        "rule": { "interval": [{ "field": "hours", "hoursInterval": 8 }] }
+      },
+      "id": "node_trigger",
+      "name": "⏰ Poll for KDP-Ready Products (Every 8h)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [200, 400],
+      "notes": "Checks Google Sheets for products approved for KDP publishing. Runs every 8 hours."
+    },
+
+    {
+      "parameters": {
+        "operation": "read",
+        "documentId": { "value": "YOUR_GOOGLE_SHEET_ID_HERE" },
+        "sheetName": { "value": "KDP_Queue" },
+        "filtersUI": {
+          "values": [
+            { "lookupColumn": "Status", "lookupValue": "Approved_For_KDP" },
+            { "lookupColumn": "KDP_Files_Ready", "lookupValue": "NO" }
+          ]
+        },
+        "options": {}
+      },
+      "id": "node_read_kdp_queue",
+      "name": "📊 Read KDP Queue",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [440, 400],
+      "notes": "Reads products queued for KDP. You populate this from Research_Opportunities by setting Status = Approved_For_KDP."
+    },
+
+    {
+      "parameters": {
+        "conditions": {
+          "conditions": [{
+            "leftValue": "={{ $items().length }}",
+            "rightValue": 0,
+            "operator": { "type": "number", "operation": "gt" }
+          }]
+        }
+      },
+      "id": "node_has_items",
+      "name": "🔀 Items in Queue?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [680, 400]
+    },
+
+    {
+      "parameters": {
+        "jsCode": "// Get brand config and determine KDP book type\nconst product = $input.first().json;\nconst category = (product.Category || product.KDP_Type || '').toLowerCase();\n\n// Map to KDP book types\nlet bookType = 'ebook';\nif (category.includes('planner') || category.includes('journal') || category.includes('notebook') || category.includes('low content')) bookType = 'low_content';\nelse if (category.includes('coloring') || category.includes('color') || category.includes('ai art')) bookType = 'coloring';\nelse if (category.includes('activity') || category.includes('education') || category.includes('learning')) bookType = 'activity';\nelse if (category.includes('puzzle') || category.includes('word search') || category.includes('crossword')) bookType = 'puzzle';\nelse if (category.includes('ebook') || category.includes('guide') || category.includes('business') || category.includes('productivity')) bookType = 'ebook';\n\n// KDP trim sizes by book type\nconst trimSizes = {\n  ebook: { width: null, height: null, format: 'EPUB+PDF', kindle: true },\n  low_content: { width: 8.5, height: 11, format: 'PDF_ONLY', kindle: false, pages: 120 },\n  coloring: { width: 8.5, height: 11, format: 'PDF_ONLY', kindle: false, pages: 40 },\n  activity: { width: 8.5, height: 8.5, format: 'PDF_ONLY', kindle: false, pages: 60 },\n  puzzle: { width: 8.5, height: 11, format: 'PDF_ONLY', kindle: false, pages: 80 }\n};\n\n// KDP pricing by type\nconst kdpPricing = {\n  ebook: { min: 2.99, max: 9.99, sweet_spot: 4.99, royalty_rate: 0.70 },\n  low_content: { min: 5.99, max: 14.99, sweet_spot: 8.99, royalty_rate: 0.60 },\n  coloring: { min: 6.99, max: 16.99, sweet_spot: 9.99, royalty_rate: 0.60 },\n  activity: { min: 5.99, max: 14.99, sweet_spot: 8.99, royalty_rate: 0.60 },\n  puzzle: { min: 6.99, max: 16.99, sweet_spot: 9.99, royalty_rate: 0.60 }\n};\n\nreturn [{ json: {\n  ...product,\n  book_type: bookType,\n  trim_size: trimSizes[bookType],\n  kdp_pricing: kdpPricing[bookType],\n  product_id: (product.Product_Name || 'book').toLowerCase().replace(/[^a-z0-9]/g, '_') + '_' + Date.now(),\n  _stage: 'book_type_detected'\n}}];"
+      },
+      "id": "node_detect_book_type",
+      "name": "⚙️ Detect KDP Book Type + Specs",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [920, 400],
+      "notes": "Detects which of the 5 book types to generate based on product category. Sets correct KDP trim size, page count, format, and pricing for each type."
+    },
+
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            { "conditions": { "conditions": [{ "leftValue": "={{ $json.book_type }}", "rightValue": "ebook", "operator": { "type": "string", "operation": "equals" } }] }, "renameOutput": true, "outputKey": "eBook" },
+            { "conditions": { "conditions": [{ "leftValue": "={{ $json.book_type }}", "rightValue": "low_content", "operator": { "type": "string", "operation": "equals" } }] }, "renameOutput": true, "outputKey": "LowContent" },
+            { "conditions": { "conditions": [{ "leftValue": "={{ $json.book_type }}", "rightValue": "coloring", "operator": { "type": "string", "operation": "equals" } }] }, "renameOutput": true, "outputKey": "Coloring" },
+            { "conditions": { "conditions": [{ "leftValue": "={{ $json.book_type }}", "rightValue": "activity", "operator": { "type": "string", "operation": "equals" } }] }, "renameOutput": true, "outputKey": "Activity" },
+            { "conditions": { "conditions": [{ "leftValue": "={{ $json.book_type }}", "rightValue": "puzzle", "operator": { "type": "string", "operation": "equals" } }] }, "renameOutput": true, "outputKey": "Puzzle" }
+          ]
+        },
+        "options": {}
+      },
+      "id": "node_route_type",
+      "name": "🔀 Route by Book Type",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [1160, 400]
+    },
+
+    {
+      "parameters": {
+        "model": "llama3",
+        "messages": {
+          "values": [
+            {
+              "role": "system",
+              "content": "You are an expert Kindle and Amazon KDP ebook author. You write complete, professional ebooks optimized for Kindle readers. You understand KDP publishing requirements, keyword optimization, and what makes ebooks sell on Amazon. You write content that is engaging, well-structured, and provides genuine value. Respond in valid JSON only."
+            },
+            {
+              "role": "user",
+              "content": "=Write a complete, ready-to-publish Kindle ebook for:\n\nTitle Concept: {{$json.Product_Name}}\nCategory: {{$json.Category}}\nTarget Keyword: {{$json.Target_Keyword}}\nDescription: {{$json.Description}}\nPrice Target: ${{$json.kdp_pricing.sweet_spot}}\n\nCreate a complete 20-30 page Kindle ebook. Respond ONLY with this JSON:\n{\n  \"book_metadata\": {\n    \"title\": \"Compelling KDP title with keyword (max 200 chars)\",\n    \"subtitle\": \"Keyword-rich subtitle explaining the value\",\n    \"author_name\": \"ClearStack Studio\",\n    \"series_name\": null,\n    \"edition\": \"First Edition\",\n    \"language\": \"English\",\n    \"publication_date\": \"2025\",\n    \"kdp_categories\": [\n      \"Business & Money > Skills\",\n      \"Self-Help > Productivity\"\n    ],\n    \"kindle_keywords\": [\"keyword1\",\"keyword2\",\"keyword3\",\"keyword4\",\"keyword5\",\"keyword6\",\"keyword7\"],\n    \"book_description_html\": \"<p>Amazon listing description in HTML. Use <b>, <p>, <ul>, <li> tags. 4000 chars max. Include: hook, what they'll learn, benefits, who it's for, CTA.</p>\",\n    \"bisac_code\": \"BUS000000\",\n    \"price_usd\": 4.99,\n    \"enrollment_kdp_select\": true\n  },\n  \"book_content\": {\n    \"front_matter\": {\n      \"title_page\": \"Title and author formatted\",\n      \"copyright_page\": \"Copyright 2025 ClearStack Studio. All rights reserved.\",\n      \"disclaimer\": \"Professional results disclaimer\",\n      \"table_of_contents\": [\"Introduction\", \"Chapter 1: ...\", \"Chapter 2: ...\", \"Conclusion\", \"About the Author\"]\n    },\n    \"introduction\": \"Full introduction text — 300-400 words. Hook, promise, roadmap.\",\n    \"chapters\": [\n      {\n        \"number\": 1,\n        \"title\": \"Chapter Title\",\n        \"content\": \"FULL chapter content — minimum 400 words. Real, actionable content. No filler.\",\n        \"chapter_summary\": \"2-3 sentence summary\",\n        \"action_steps\": [\"Concrete action 1\", \"Concrete action 2\", \"Concrete action 3\"]\n      }\n    ],\n    \"conclusion\": \"Full conclusion — 200 words. Recap + encouragement + next steps.\",\n    \"about_author\": \"ClearStack Studio creates practical productivity tools for modern professionals and entrepreneurs.\",\n    \"bonus_resources\": \"Optional: mention related products in your store\"\n  },\n  \"cover_brief\": {\n    \"concept\": \"Visual description for cover designer\",\n    \"sd_prompt\": \"Stable Diffusion prompt for cover background image\",\n    \"title_treatment\": \"Font style suggestion\",\n    \"color_scheme\": \"navy #1B2A4A with gold #C9A84C accents\",\n    \"kdp_cover_specs\": \"2560x1600px minimum, 300 DPI, JPG or TIFF\"\n  },\n  \"epub_structure\": {\n    \"chapters_count\": 5,\n    \"estimated_pages_print\": 28,\n    \"estimated_read_time_minutes\": 45,\n    \"file_size_estimate_mb\": 0.5\n  }\n}"
+            }
+          ]
+        },
+        "options": { "temperature": 0.75 }
+      },
+      "id": "node_llama_ebook",
+      "name": "🧠 llama3 — Write Kindle eBook",
+      "type": "n8n-nodes-base.ollama",
+      "typeVersion": 1,
+      "position": [1420, 120],
+      "notes": "llama3 writes the complete Kindle ebook with all metadata. KDP-specific metadata format including HTML book description, BISAC codes, and 7 kindle keywords."
+    },
+
+    {
+      "parameters": {
+        "model": "llama3",
+        "messages": {
+          "values": [
+            {
+              "role": "system",
+              "content": "You are an expert KDP low content book designer. You create professional interiors for planners, journals, trackers, and notebooks that sell well on Amazon. You understand KDP interior specifications, bleed/margin requirements, and what makes low content books functional and beautiful. Respond in valid JSON only."
+            },
+            {
+              "role": "user",
+              "content": "=Design a complete KDP low content book interior for:\n\nProduct: {{$json.Product_Name}}\nCategory: {{$json.Category}}\nTarget Keyword: {{$json.Target_Keyword}}\nTrim Size: 8.5 x 11 inches\nTarget Pages: 120\nPrice Target: ${{$json.kdp_pricing.sweet_spot}}\n\nCreate a complete low content book. Respond ONLY with this JSON:\n{\n  \"book_metadata\": {\n    \"title\": \"KDP-optimized title with primary keyword\",\n    \"subtitle\": \"Descriptive subtitle with secondary keywords\",\n    \"author_name\": \"ClearStack Studio\",\n    \"kdp_categories\": [\"Calendars > Planners & Organizers\", \"Self-Help > Time Management\"],\n    \"kindle_keywords\": [\"keyword1\",\"keyword2\",\"keyword3\",\"keyword4\",\"keyword5\",\"keyword6\",\"keyword7\"],\n    \"book_description_html\": \"<p>Amazon description HTML 4000 chars max</p>\",\n    \"price_usd\": 8.99,\n    \"page_count\": 120,\n    \"trim_width_inches\": 8.5,\n    \"trim_height_inches\": 11,\n    \"bleed\": false,\n    \"paper_color\": \"white\",\n    \"cover_finish\": \"matte\"\n  },\n  \"interior_layout\": {\n    \"margins\": {\n      \"top_inches\": 0.75,\n      \"bottom_inches\": 0.75,\n      \"inside_inches\": 0.875,\n      \"outside_inches\": 0.5\n    },\n    \"font_body\": \"Arial\",\n    \"font_size_body\": 11,\n    \"line_height\": 1.5,\n    \"page_number_position\": \"bottom-center\"\n  },\n  \"pages\": [\n    {\n      \"page_type\": \"title_page | section_header | content_page | divider\",\n      \"page_number_start\": 1,\n      \"page_number_end\": 1,\n      \"html_template\": \"Complete self-contained HTML for this page type with embedded CSS. Must be print-ready at 8.5x11 inches.\",\n      \"repeats\": 1,\n      \"description\": \"What this page is\"\n    }\n  ],\n  \"cover_brief\": {\n    \"sd_prompt\": \"Stable Diffusion prompt for cover\",\n    \"color_scheme\": \"navy and gold, clean minimal\",\n    \"style\": \"Professional, minimal, organized aesthetic\",\n    \"spine_text\": \"Book title for spine\"\n  },\n  \"interior_file_specs\": {\n    \"format\": \"PDF\",\n    \"color_profile\": \"RGB\",\n    \"resolution_dpi\": 300,\n    \"total_pages_with_cover\": 122\n  }\n}"
+            }
+          ]
+        },
+        "options": { "temperature": 0.7 }
+      },
+      "id": "node_llama_lowcontent",
+      "name": "🧠 llama3 — Design Low Content Book",
+      "type": "n8n-nodes-base.ollama",
+      "typeVersion": 1,
+      "position": [1420, 280],
+      "notes": "Designs complete 120-page low content book interior. Generates all page types: cover, title page, section headers, content pages. Includes KDP-specific specs (bleed, margins, paper color, spine)."
+    },
+
+    {
+      "parameters": {
+        "model": "phi3",
+        "messages": {
+          "values": [
+            {
+              "role": "system",
+              "content": "You are an expert coloring book designer and AI art director for KDP. You create professional coloring book interiors with beautiful line-art descriptions and AI image generation prompts. You understand that KDP coloring books need clean black and white line art, proper bleed, and varied complexity levels. Respond in valid JSON only."
+            },
+            {
+              "role": "user",
+              "content": "=Design a complete KDP coloring book for:\n\nProduct: {{$json.Product_Name}}\nCategory: {{$json.Category}}\nTarget Keyword: {{$json.Target_Keyword}}\nPages: 40 coloring pages\nTrim: 8.5 x 11 inches\n\nRespond ONLY with this JSON:\n{\n  \"book_metadata\": {\n    \"title\": \"KDP coloring book title with keyword\",\n    \"subtitle\": \"For adults/kids/all ages subtitle\",\n    \"author_name\": \"ClearStack Studio\",\n    \"kdp_categories\": [\"Arts & Photography > Drawing\"],\n    \"kindle_keywords\": [\"coloring book\",\"keyword2\",\"keyword3\",\"keyword4\",\"keyword5\",\"keyword6\",\"keyword7\"],\n    \"book_description_html\": \"<p>Coloring book description HTML</p>\",\n    \"price_usd\": 9.99,\n    \"page_count\": 88,\n    \"bleed\": true,\n    \"bleed_amount_inches\": 0.125,\n    \"paper_color\": \"white\",\n    \"cover_finish\": \"matte\",\n    \"interior_color\": \"black_and_white\"\n  },\n  \"coloring_pages\": [\n    {\n      \"page_number\": 1,\n      \"theme\": \"page theme\",\n      \"complexity\": \"simple | medium | detailed\",\n      \"sd_prompt\": \"Stable Diffusion prompt for line art: coloring book page, black and white line art, clean outlines, no shading, no fill, coloring book style, [specific scene], white background, thick clean lines\",\n      \"negative_prompt\": \"color, shading, gray, filled areas, photorealistic, text, watermark\",\n      \"title_text\": \"optional page title to print below image\"\n    }\n  ],\n  \"structure\": {\n    \"intro_pages\": 4,\n    \"coloring_pages\": 40,\n    \"blank_back_pages\": 40,\n    \"end_pages\": 4,\n    \"total\": 88\n  },\n  \"cover_brief\": {\n    \"sd_prompt\": \"Colorful, vibrant cover showing the coloring book theme\",\n    \"style\": \"Eye-catching, colorful cover that shows what's inside\"\n  }\n}"
+            }
+          ]
+        },
+        "options": { "temperature": 0.8 }
+      },
+      "id": "node_phi3_coloring",
+      "name": "🧠 phi3 — Design Coloring Book",
+      "type": "n8n-nodes-base.ollama",
+      "typeVersion": 1,
+      "position": [1420, 440],
+      "notes": "phi3 designs 40-page coloring book with SD prompts for each page. Proper KDP specs: bleed, black/white interior, blank backs. Uses phi3 because it's excellent at precise technical specifications."
+    },
+
+    {
+      "parameters": {
+        "model": "llama3",
+        "messages": {
+          "values": [
+            {
+              "role": "system",
+              "content": "You are an expert educational activity book creator for KDP. You design engaging, educational activity books for children and adults. You understand KDP activity book requirements and create content that is fun, educational, and age-appropriate. All content must be family-friendly and halal. Respond in valid JSON only."
+            },
+            {
+              "role": "user",
+              "content": "=Create a complete KDP activity book for:\n\nProduct: {{$json.Product_Name}}\nCategory: {{$json.Category}}\nTarget Keyword: {{$json.Target_Keyword}}\nTarget Age: determined by keyword\nPages: 60 activity pages\n\nRespond ONLY with this JSON:\n{\n  \"book_metadata\": {\n    \"title\": \"Activity book KDP title\",\n    \"subtitle\": \"Age range and value subtitle\",\n    \"author_name\": \"ClearStack Studio\",\n    \"target_age_range\": \"6-10 | 8-12 | adults\",\n    \"kdp_categories\": [\"Children's Books > Activities\"],\n    \"kindle_keywords\": [\"activity book\",\"keyword2\",\"keyword3\",\"keyword4\",\"keyword5\",\"keyword6\",\"keyword7\"],\n    \"book_description_html\": \"<p>Activity book description</p>\",\n    \"price_usd\": 8.99,\n    \"page_count\": 68\n  },\n  \"activity_pages\": [\n    {\n      \"page_number\": 1,\n      \"activity_type\": \"maze | matching | dot-to-dot | fill-in | true-false | draw-and-color | quiz | word-scramble | story-starter\",\n      \"topic\": \"educational topic\",\n      \"difficulty\": \"easy | medium | hard\",\n      \"html_content\": \"Complete HTML for this activity page with instructions, activity area, and answer hint. Self-contained, print-ready.\",\n      \"learning_objective\": \"What skill this develops\"\n    }\n  ],\n  \"sections\": [\n    { \"section_name\": \"Section Title\", \"pages\": [1,2,3], \"theme\": \"theme\" }\n  ],\n  \"cover_brief\": {\n    \"sd_prompt\": \"Friendly, colorful, educational activity book cover\",\n    \"style\": \"Bright, child-friendly, educational\"\n  }\n}"
+            }
+          ]
+        },
+        "options": { "temperature": 0.78 }
+      },
+      "id": "node_llama_activity",
+      "name": "🧠 llama3 — Create Activity Book",
+      "type": "n8n-nodes-base.ollama",
+      "typeVersion": 1,
+      "position": [1420, 600],
+      "notes": "Creates complete educational activity book with diverse activity types. All content halal and family-friendly."
+    },
+
+    {
+      "parameters": {
+        "model": "llama3",
+        "messages": {
+          "values": [
+            {
+              "role": "system",
+              "content": "You are an expert puzzle book creator for KDP. You generate complete word search puzzles, crossword puzzles, and other word games. You understand KDP puzzle book formatting and what sells. Create puzzles that are genuinely solvable and entertaining. Respond in valid JSON only."
+            },
+            {
+              "role": "user",
+              "content": "=Create a complete KDP puzzle book for:\n\nProduct: {{$json.Product_Name}}\nCategory: {{$json.Category}}\nTarget Keyword: {{$json.Target_Keyword}}\nPages: 80 puzzle pages\n\nRespond ONLY with this JSON:\n{\n  \"book_metadata\": {\n    \"title\": \"Puzzle book KDP title with keyword\",\n    \"subtitle\": \"Number of puzzles + difficulty subtitle\",\n    \"author_name\": \"ClearStack Studio\",\n    \"kdp_categories\": [\"Games & Activities > Puzzles & Games\"],\n    \"kindle_keywords\": [\"word search\",\"puzzle book\",\"keyword3\",\"keyword4\",\"keyword5\",\"keyword6\",\"keyword7\"],\n    \"book_description_html\": \"<p>Puzzle book description HTML</p>\",\n    \"price_usd\": 9.99,\n    \"page_count\": 88\n  },\n  \"puzzles\": [\n    {\n      \"puzzle_number\": 1,\n      \"puzzle_type\": \"word_search | crossword | word_scramble | cryptogram | fill_in_blank\",\n      \"theme\": \"puzzle theme\",\n      \"difficulty\": \"easy | medium | hard\",\n      \"grid_size\": \"10x10 | 15x15 | 20x20\",\n      \"word_list\": [\"WORD1\", \"WORD2\", \"WORD3\", \"WORD4\", \"WORD5\", \"WORD6\", \"WORD7\", \"WORD8\"],\n      \"html_content\": \"Complete self-contained HTML for this puzzle page. Include: title, instructions, puzzle grid (use HTML table for word search), word list, difficulty indicator. Print-ready at 8.5x11.\",\n      \"answer_html\": \"HTML for the answer key page for this puzzle\"\n    }\n  ],\n  \"answer_section_starts_page\": 81,\n  \"cover_brief\": {\n    \"sd_prompt\": \"Professional puzzle book cover, brain, letters, engaging\",\n    \"style\": \"Engaging, colorful, suggests mental challenge\"\n  }\n}"
+            }
+          ]
+        },
+        "options": { "temperature": 0.7 }
+      },
+      "id": "node_llama_puzzle",
+      "name": "🧠 llama3 — Create Puzzle Book",
+      "type": "n8n-nodes-base.ollama",
+      "typeVersion": 1,
+      "position": [1420, 760],
+      "notes": "Creates complete puzzle book with word searches, crosswords, scrambles. HTML grid-based puzzles that convert cleanly to print PDF."
+    },
+
+    {
+      "parameters": {
+        "jsCode": "// Universal parser for all 5 book types\nconst raw = $input.first().json;\nconst productData = $('⚙️ Detect KDP Book Type + Specs').first().json;\n\nlet bookData;\ntry {\n  const content = raw?.message?.content || raw?.response || '';\n  const match = content.match(/```json\\n?([\\s\\S]*?)\\n?```/) || content.match(/({[\\s\\S]*})/);\n  bookData = JSON.parse((match ? match[1] || match[0] : content).trim());\n} catch(e) {\n  bookData = { error: true, message: e.message, raw: raw?.message?.content?.substring(0,300) };\n}\n\nconst productId = productData.product_id;\nconst bookType = productData.book_type;\n\n// Determine which pages to render\nlet pagesArray = [];\nif (bookType === 'ebook') {\n  // Build pages from chapters\n  const chapters = bookData.book_content?.chapters || [];\n  pagesArray = chapters.map((ch, i) => ({\n    type: 'chapter',\n    number: i + 1,\n    title: ch.title,\n    content: ch.content,\n    action_steps: ch.action_steps || []\n  }));\n} else if (bookType === 'low_content') {\n  pagesArray = bookData.pages || [];\n} else if (bookType === 'coloring') {\n  pagesArray = bookData.coloring_pages || [];\n} else if (bookType === 'activity') {\n  pagesArray = bookData.activity_pages || [];\n} else if (bookType === 'puzzle') {\n  pagesArray = bookData.puzzles || [];\n}\n\nreturn [{ json: {\n  book_data: bookData,\n  book_type: bookType,\n  product_id: productId,\n  metadata: bookData.book_metadata || {},\n  pages_array: pagesArray,\n  pages_count: pagesArray.length,\n  cover_brief: bookData.cover_brief || {},\n  product_source: productData,\n  _parsed: true,\n  _parsed_at: new Date().toISOString()\n}}];"
+      },
+      "id": "node_parse_book",
+      "name": "⚙️ Parse Book Content",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1720, 440],
+      "notes": "Universal parser for all 5 book types. Normalizes the structure for the HTML builder."
+    },
+
+    {
+      "parameters": {
+        "jsCode": "// Build complete book HTML based on type\nconst input = $input.first().json;\nconst bookType = input.book_type;\nconst meta = input.metadata;\nconst pages = input.pages_array;\nconst bookData = input.book_data;\n\n// Brand colors\nconst PRIMARY = '#1B2A4A';\nconst ACCENT = '#C9A84C';\nconst BG = '#FFFFFF';\nconst TEXT = '#2D3748';\n\n// Base CSS for all book types\nconst baseCSS = `\n  @page { margin: 0; size: 8.5in 11in; }\n  * { box-sizing: border-box; margin: 0; padding: 0; }\n  body { font-family: 'Arial', sans-serif; color: ${TEXT}; background: ${BG}; }\n  .page { width: 8.5in; min-height: 11in; padding: 0.75in 0.875in 0.75in 0.5in; page-break-after: always; position: relative; }\n  .page-number { position: absolute; bottom: 0.4in; left: 50%; transform: translateX(-50%); font-size: 10pt; color: #999; }\n  h1 { font-size: 28pt; color: ${PRIMARY}; margin-bottom: 20px; }\n  h2 { font-size: 20pt; color: ${PRIMARY}; margin-bottom: 16px; }\n  h3 { font-size: 14pt; color: ${ACCENT}; margin-bottom: 12px; }\n  p { font-size: 11pt; line-height: 1.7; margin-bottom: 14px; }\n  .accent-bar { width: 60px; height: 4px; background: ${ACCENT}; margin-bottom: 20px; }\n  @media print { * { -webkit-print-color-adjust: exact; print-color-adjust: exact; } }\n`;\n\nlet fullHTML = '';\n\nif (bookType === 'ebook' || bookType === 'low_content') {\n  // ── EBOOK: Full styled manuscript ─────────────────────\n  const frontMatter = bookData.book_content?.front_matter || {};\n  const chapters = bookData.book_content?.chapters || [];\n  \n  const chaptersHTML = chapters.map(ch => `\n    <div class=\"page\">\n      <div class=\"chapter-label\">Chapter ${ch.number}</div>\n      <h2>${ch.title}</h2>\n      <div class=\"accent-bar\"></div>\n      ${ch.content.split('\\n').filter(p=>p.trim()).map(p=>`<p>${p}</p>`).join('')}\n      ${ch.action_steps?.length ? `\n        <div class=\"action-box\">\n          <h3>Action Steps</h3>\n          <ul>${ch.action_steps.map(s=>`<li>${s}</li>`).join('')}</ul>\n        </div>` : ''}\n      <div class=\"page-number\">${ch.number + 3}</div>\n    </div>\n  `).join('');\n\n  fullHTML = `<!DOCTYPE html><html><head><meta charset=\"UTF-8\">\n  <style>\n    ${baseCSS}\n    .cover-page { background: linear-gradient(135deg, ${PRIMARY}, #2D4A7A); color: white; display: flex; flex-direction: column; justify-content: center; padding: 1.5in; }\n    .cover-page h1 { color: white; font-size: 36pt; }\n    .cover-subtitle { font-size: 16pt; color: rgba(255,255,255,0.85); margin-top: 16px; }\n    .cover-author { margin-top: 60px; color: ${ACCENT}; font-size: 14pt; }\n    .toc-page { }\n    .toc-item { padding: 10px 0; border-bottom: 1px solid #eee; font-size: 12pt; display: flex; justify-content: space-between; }\n    .chapter-label { font-size: 9pt; text-transform: uppercase; letter-spacing: 3px; color: ${ACCENT}; margin-bottom: 8px; }\n    .action-box { background: #F0F4FF; border-left: 4px solid ${ACCENT}; padding: 20px 24px; margin-top: 30px; border-radius: 0 8px 8px 0; }\n    .action-box ul li { padding: 6px 0; font-size: 10.5pt; }\n  </style>\n  </head><body>\n  <div class=\"page cover-page\">\n    <h1>${meta.title}</h1>\n    <div class=\"cover-subtitle\">${meta.subtitle || ''}</div>\n    <div class=\"cover-author\">${meta.author_name}</div>\n  </div>\n  <div class=\"page\">\n    <h2>Table of Contents</h2><div class=\"accent-bar\"></div>\n    ${(meta.kdp_categories || []).map((c,i) => `<div class=\"toc-item\"><span>Chapter ${i+1}</span><span>${i+4}</span></div>`).join('')}\n  </div>\n  <div class=\"page\">\n    <h2>Introduction</h2><div class=\"accent-bar\"></div>\n    ${(bookData.book_content?.introduction || '').split('\\n').filter(p=>p.trim()).map(p=>`<p>${p}</p>`).join('')}\n  </div>\n  ${chaptersHTML}\n  <div class=\"page\">\n    <h2>Conclusion</h2><div class=\"accent-bar\"></div>\n    ${(bookData.book_content?.conclusion || '').split('\\n').filter(p=>p.trim()).map(p=>`<p>${p}</p>`).join('')}\n  </div>\n  <div class=\"page\">\n    <h2>About the Author</h2><div class=\"accent-bar\"></div>\n    <p>${bookData.book_content?.about_author || ''}</p>\n  </div>\n  </body></html>`;\n\n} else if (bookType === 'low_content') {\n  // ── LOW CONTENT: Planner/Journal pages ───────────────\n  const pagesHTML = pages.map((page, i) => \n    page.html_template ? \n    `<div class=\"page\">${page.html_template}<div class=\"page-number\">${i+3}</div></div>` :\n    `<div class=\"page\"><div class=\"page-number\">${i+3}</div></div>`\n  ).join('');\n  \n  fullHTML = `<!DOCTYPE html><html><head><meta charset=\"UTF-8\"><style>${baseCSS}</style></head><body>\n  <div class=\"page\" style=\"display:flex;flex-direction:column;justify-content:center;align-items:center;background:${PRIMARY};\">\n    <h1 style=\"color:white;text-align:center;\">${meta.title}</h1>\n  </div>\n  ${pagesHTML}</body></html>`;\n\n} else if (bookType === 'coloring') {\n  // ── COLORING: Placeholder pages with SD prompts ───────\n  // Actual images generated separately via Replicate\n  const colorPagesHTML = pages.map((page, i) => `\n    <div class=\"page\" style=\"display:flex;flex-direction:column;align-items:center;justify-content:center;\">\n      <div style=\"width:7.5in;height:9in;border:1px solid #eee;display:flex;align-items:center;justify-content:center;background:#fafafa;\">\n        <p style=\"color:#ccc;font-size:10pt;\">[Coloring Page ${i+1}: ${page.theme}]</p>\n      </div>\n      ${page.title_text ? `<p style=\"margin-top:8px;font-size:10pt;color:#666;\">${page.title_text}</p>` : ''}\n    </div>\n    <div class=\"page\"></div>\n  `).join('');\n  \n  fullHTML = `<!DOCTYPE html><html><head><meta charset=\"UTF-8\"><style>${baseCSS}</style></head><body>\n  <div class=\"page\" style=\"display:flex;flex-direction:column;justify-content:center;align-items:center;background:${PRIMARY};\">\n    <h1 style=\"color:white;text-align:center;\">${meta.title}</h1>\n    <p style=\"color:${ACCENT};margin-top:20px;\">A Coloring Book by ${meta.author_name}</p>\n  </div>\n  ${colorPagesHTML}</body></html>`;\n\n} else {\n  // ── ACTIVITY / PUZZLE: Use HTML from each page ────────\n  const actPagesHTML = pages.map((page, i) => \n    `<div class=\"page\">${page.html_content || page.answer_html || `<h3>${page.theme || page.topic || 'Page ' + (i+1)}</h3>`}<div class=\"page-number\">${i+3}</div></div>`\n  ).join('');\n  \n  fullHTML = `<!DOCTYPE html><html><head><meta charset=\"UTF-8\"><style>${baseCSS}</style></head><body>\n  <div class=\"page\" style=\"display:flex;flex-direction:column;justify-content:center;align-items:center;background:${PRIMARY};\">\n    <h1 style=\"color:white;text-align:center;\">${meta.title}</h1>\n  </div>\n  ${actPagesHTML}</body></html>`;\n}\n\nreturn [{ json: {\n  ...input,\n  html_content: fullHTML,\n  html_path: `/tmp/kdp_${input.product_id}_interior.html`,\n  pdf_path: `/tmp/kdp_${input.product_id}_interior.pdf`,\n  epub_path: `/tmp/kdp_${input.product_id}.epub`,\n  _html_built: true\n}}];"
+      },
+      "id": "node_build_html",
+      "name": "🖥️ Build KDP-Formatted HTML",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1980, 440],
+      "notes": "Builds complete, KDP-compliant HTML for all book types. Correct margins (0.875in inside for 120+ pages), 8.5x11 page size, print-ready CSS. Different templates per book type."
+    },
+
+    {
+      "parameters": {
+        "command": "=# Write HTML to file\ncat > '{{ $json.html_path }}' << 'BOOKEOF'\n{{ $json.html_content.substring(0, 100000) }}\nBOOKEOF\n\n# Convert to PDF with KDP specs\n# 8.5x11in = 612x792pt\nwkhtmltopdf \\\n  --page-width 8.5in \\\n  --page-height 11in \\\n  --margin-top 0 \\\n  --margin-right 0 \\\n  --margin-bottom 0 \\\n  --margin-left 0 \\\n  --dpi 300 \\\n  --image-quality 100 \\\n  --enable-local-file-access \\\n  --print-media-type \\\n  --no-outline \\\n  '{{ $json.html_path }}' '{{ $json.pdf_path }}' 2>&1\n\n# Verify\nif [ -f '{{ $json.pdf_path }}' ]; then\n  SIZE=$(ls -lh '{{ $json.pdf_path }}' | awk '{print $5}')\n  PAGES=$(pdfinfo '{{ $json.pdf_path }}' 2>/dev/null | grep Pages | awk '{print $2}' || echo 'unknown')\n  echo \"SUCCESS|{{ $json.pdf_path }}|$SIZE|$PAGES pages\"\nelse\n  echo \"FAILED|PDF not created\"\nfi"
+      },
+      "id": "node_render_pdf",
+      "name": "💻 Render KDP Interior PDF",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [2240, 440],
+      "notes": "Renders KDP-spec PDF at 300 DPI. Uses wkhtmltopdf with exact KDP dimensions. Install poppler-utils for pdfinfo: apt-get install poppler-utils"
+    },
+
+    {
+      "parameters": {
+        "command": "=# Generate EPUB for Kindle (ebooks only)\nBOOK_TYPE='{{ $json.book_type }}'\nPRODUCT_ID='{{ $json.product_id }}'\nTITLE='{{ $json.metadata.title }}'\nAUTHOR='{{ $json.metadata.author_name }}'\nEPUB_PATH='{{ $json.epub_path }}'\nHTML_PATH='{{ $json.html_path }}'\n\nif [ \"$BOOK_TYPE\" = \"ebook\" ]; then\n  # Install pandoc if not present\n  which pandoc || apt-get install -y pandoc 2>/dev/null\n  \n  # Convert HTML to EPUB using pandoc\n  pandoc \\\n    --from html \\\n    --to epub3 \\\n    --output \"$EPUB_PATH\" \\\n    --metadata title=\"$TITLE\" \\\n    --metadata author=\"$AUTHOR\" \\\n    --metadata lang=\"en\" \\\n    --epub-cover-image=\"/tmp/kdp_${PRODUCT_ID}_cover.jpg\" \\\n    \"$HTML_PATH\" 2>&1\n  \n  if [ -f \"$EPUB_PATH\" ]; then\n    echo \"EPUB_SUCCESS|$EPUB_PATH\"\n  else\n    echo \"EPUB_SKIPPED|Not an ebook type or conversion failed\"\n  fi\nelse\n  echo \"EPUB_SKIPPED|Book type is $BOOK_TYPE - no EPUB needed\"\nfi"
+      },
+      "id": "node_build_epub",
+      "name": "📱 Build EPUB (Kindle Format)",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [2500, 440],
+      "notes": "Converts ebooks to EPUB3 format for Kindle. Uses pandoc. Install: apt-get install pandoc. Skipped automatically for non-ebook types (PDF-only)."
+    },
+
+    {
+      "parameters": {
+        "model": "phi3",
+        "messages": {
+          "values": [
+            {
+              "role": "system",
+              "content": "You are a KDP cover designer. You generate precise Stable Diffusion prompts for book covers that meet KDP specifications and stand out in Amazon search results. You know exactly what makes covers convert. Respond in valid JSON only."
+            },
+            {
+              "role": "user",
+              "content": "=Generate a KDP book cover design for:\n\nTitle: {{$json.metadata.title}}\nSubtitle: {{$json.metadata.subtitle}}\nAuthor: {{$json.metadata.author_name}}\nBook Type: {{$json.book_type}}\nBrand Colors: Navy #1B2A4A, Gold #C9A84C\nCover Brief: {{JSON.stringify($json.cover_brief)}}\n\nRespond ONLY with this JSON:\n{\n  \"cover_sd_prompt\": \"Highly detailed Stable Diffusion prompt for book cover BACKGROUND image only. No text in image. Professional, high quality, matches book theme. Specify: style, mood, colors, composition. End with: book cover background, professional, high resolution, 2560x1600\",\n  \"negative_prompt\": \"text, words, letters, watermark, blurry, low quality, distorted\",\n  \"cover_layout\": {\n    \"background_style\": \"description of the visual\",\n    \"title_position\": \"top-center | center | bottom-center\",\n    \"title_font_suggestion\": \"font name\",\n    \"title_color\": \"#hex\",\n    \"subtitle_color\": \"#hex\",\n    \"author_position\": \"bottom of cover\",\n    \"overlay_opacity\": 0.4\n  },\n  \"cover_html\": \"Complete self-contained HTML that renders the FULL book cover with title text overlaid. Use CSS to position title, subtitle, author over a placeholder div. Size: 2560x1600px equivalent in CSS. This will have the background image injected later.\",\n  \"spine_text\": \"Short title for spine (max 30 chars)\",\n  \"back_cover_html\": \"HTML for back cover with book description, author bio, barcode placeholder\"\n}"
+            }
+          ]
+        },
+        "options": { "temperature": 0.7 }
+      },
+      "id": "node_phi3_cover",
+      "name": "🧠 phi3 — Design Book Cover",
+      "type": "n8n-nodes-base.ollama",
+      "typeVersion": 1,
+      "position": [2240, 660],
+      "notes": "phi3 designs the complete book cover including SD prompt, text layout, spine, and back cover. Runs in parallel with PDF rendering."
+    },
+
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.replicate.com/v1/predictions",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "Token YOUR_REPLICATE_API_TOKEN" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "body": "={\n  \"version\": \"ac732df83cea7fff18b8472768c88ad041fa750ff7682a21affe81863cbe77e4\",\n  \"input\": {\n    \"prompt\": \"{{ $json.cover_sd_prompt }}, professional book cover, amazon kdp, high quality\",\n    \"negative_prompt\": \"{{ $json.negative_prompt }}\",\n    \"width\": 1600,\n    \"height\": 2560,\n    \"num_outputs\": 1,\n    \"scheduler\": \"DPMSolverMultistep\",\n    \"num_inference_steps\": 35,\n    \"guidance_scale\": 8\n  }\n}",
+        "options": {}
+      },
+      "id": "node_cover_image",
+      "name": "🎨 Generate Cover Background Image",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [2500, 660],
+      "notes": "Generates cover background at KDP spec dimensions (1600x2560 = portrait book cover). Uses Replicate SDXL."
+    },
+
+    {
+      "parameters": {
+        "amount": 45,
+        "unit": "seconds"
+      },
+      "id": "node_wait_cover",
+      "name": "⏳ Wait for Cover Generation",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1,
+      "position": [2760, 660]
+    },
+
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://api.replicate.com/v1/predictions/{{ $json.id }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [{ "name": "Authorization", "value": "Token YOUR_REPLICATE_API_TOKEN" }]
+        },
+        "options": {}
+      },
+      "id": "node_poll_cover",
+      "name": "🔍 Poll Cover Result",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [3020, 660]
+    },
+
+    {
+      "parameters": {
+        "jsCode": "// Assemble complete KDP package record\nconst pdfResult = $('💻 Render KDP Interior PDF').first().json;\nconst epubResult = $('📱 Build EPUB (Kindle Format)').first().json;\nconst coverImage = $('🔍 Poll Cover Result').first().json;\nconst bookInput = $('🖥️ Build KDP-Formatted HTML').first().json;\n\n// Parse PDF result\nconst pdfOutput = pdfResult?.stdout || '';\nconst pdfSuccess = pdfOutput.includes('SUCCESS');\nconst pdfPath = pdfSuccess ? pdfOutput.split('|')[1] : null;\nconst pdfSize = pdfSuccess ? pdfOutput.split('|')[2] : null;\n\n// Parse EPUB result  \nconst epubOutput = epubResult?.stdout || '';\nconst epubSuccess = epubOutput.includes('EPUB_SUCCESS');\nconst epubPath = epubSuccess ? epubOutput.split('|')[1] : null;\n\n// Cover image URL from Replicate\nconst coverUrl = coverImage?.output?.[0] || null;\n\nconst kdpPackage = {\n  product_id: bookInput.product_id,\n  book_type: bookInput.book_type,\n  metadata: bookInput.metadata,\n  \n  files: {\n    interior_pdf: pdfPath,\n    interior_pdf_size: pdfSize,\n    epub_file: epubPath,\n    cover_image_url: coverUrl,\n    cover_html_path: `/tmp/kdp_${bookInput.product_id}_cover.html`\n  },\n  \n  kdp_upload_data: {\n    title: bookInput.metadata.title,\n    subtitle: bookInput.metadata.subtitle,\n    author: bookInput.metadata.author_name,\n    description_html: bookInput.metadata.book_description_html,\n    keywords: bookInput.metadata.kindle_keywords,\n    categories: bookInput.metadata.kdp_categories,\n    price_usd: bookInput.metadata.price_usd,\n    page_count: bookInput.metadata.page_count,\n    language: 'English',\n    publication_date: new Date().getFullYear().toString(),\n    enrollment_kdp_select: bookInput.metadata.enrollment_kdp_select || false\n  },\n  \n  status: {\n    pdf_ready: pdfSuccess,\n    epub_ready: epubSuccess,\n    cover_ready: !!coverUrl,\n    ready_for_upload: pdfSuccess && !!coverUrl\n  },\n  \n  assembled_at: new Date().toISOString()\n};\n\nreturn [{ json: kdpPackage }];"
+      },
+      "id": "node_assemble_package",
+      "name": "📦 Assemble KDP Package",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3280, 500],
+      "notes": "Assembles the complete KDP upload package: interior PDF + EPUB + cover image + all metadata formatted for KDP upload form."
+    },
+
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": { "value": "YOUR_GOOGLE_SHEET_ID_HERE" },
+        "sheetName": { "value": "KDP_Upload_Queue" },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Product_ID": "={{ $json.product_id }}",
+            "Book_Type": "={{ $json.book_type }}",
+            "Title": "={{ $json.kdp_upload_data.title }}",
+            "Subtitle": "={{ $json.kdp_upload_data.subtitle }}",
+            "Author": "={{ $json.kdp_upload_data.author }}",
+            "Keywords": "={{ ($json.kdp_upload_data.keywords || []).join(', ') }}",
+            "Categories": "={{ ($json.kdp_upload_data.categories || []).join(' | ') }}",
+            "Price_USD": "={{ $json.kdp_upload_data.price_usd }}",
+            "Page_Count": "={{ $json.kdp_upload_data.page_count }}",
+            "Interior_PDF": "={{ $json.files.interior_pdf }}",
+            "EPUB_File": "={{ $json.files.epub_file }}",
+            "Cover_Image_URL": "={{ $json.files.cover_image_url }}",
+            "PDF_Ready": "={{ $json.status.pdf_ready }}",
+            "Cover_Ready": "={{ $json.status.cover_ready }}",
+            "Ready_For_Upload": "={{ $json.status.ready_for_upload }}",
+            "KDP_Upload_Status": "PENDING",
+            "D2D_Upload_Status": "PENDING",
+            "PublishDrive_Status": "PENDING",
+            "ASIN": "",
+            "KDP_Live_URL": "",
+            "Created_At": "={{ $json.assembled_at }}"
+          }
+        },
+        "options": {}
+      },
+      "id": "node_write_kdp_queue",
+      "name": "📊 Write to KDP_Upload_Queue Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [3540, 500],
+      "notes": "Writes the complete KDP package to the upload queue sheet. You'll use this as your upload checklist and Workflow 08B reads it to auto-upload to D2D and PublishDrive."
+    },
+
+    {
+      "parameters": {
+        "operation": "update",
+        "documentId": { "value": "YOUR_GOOGLE_SHEET_ID_HERE" },
+        "sheetName": { "value": "KDP_Queue" },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": { "KDP_Files_Ready": "YES", "Status": "Files_Generated" }
+        },
+        "where": {
+          "values": [{ "lookupColumn": "Product_ID", "lookupValue": "={{ $json.product_id }}" }]
+        },
+        "options": {}
+      },
+      "id": "node_update_queue",
+      "name": "📊 Update KDP Queue Status",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [3800, 500]
+    }
+
+  ],
+  "connections": {
+    "⏰ Poll for KDP-Ready Products (Every 8h)": { "main": [[{ "node": "📊 Read KDP Queue", "type": "main", "index": 0 }]] },
+    "📊 Read KDP Queue": { "main": [[{ "node": "🔀 Items in Queue?", "type": "main", "index": 0 }]] },
+    "🔀 Items in Queue?": { "main": [[{ "node": "⚙️ Detect KDP Book Type + Specs", "type": "main", "index": 0 }]] },
+    "⚙️ Detect KDP Book Type + Specs": { "main": [[{ "node": "🔀 Route by Book Type", "type": "main", "index": 0 }]] },
+    "🔀 Route by Book Type": {
+      "main": [
+        [{ "node": "🧠 llama3 — Write Kindle eBook", "type": "main", "index": 0 }],
+        [{ "node": "🧠 llama3 — Design Low Content Book", "type": "main", "index": 0 }],
+        [{ "node": "🧠 phi3 — Design Coloring Book", "type": "main", "index": 0 }],
+        [{ "node": "🧠 llama3 — Create Activity Book", "type": "main", "index": 0 }],
+        [{ "node": "🧠 llama3 — Create Puzzle Book", "type": "main", "index": 0 }]
+      ]
+    },
+    "🧠 llama3 — Write Kindle eBook": { "main": [[{ "node": "⚙️ Parse Book Content", "type": "main", "index": 0 }]] },
+    "🧠 llama3 — Design Low Content Book": { "main": [[{ "node": "⚙️ Parse Book Content", "type": "main", "index": 0 }]] },
+    "🧠 phi3 — Design Coloring Book": { "main": [[{ "node": "⚙️ Parse Book Content", "type": "main", "index": 0 }]] },
+    "🧠 llama3 — Create Activity Book": { "main": [[{ "node": "⚙️ Parse Book Content", "type": "main", "index": 0 }]] },
+    "🧠 llama3 — Create Puzzle Book": { "main": [[{ "node": "⚙️ Parse Book Content", "type": "main", "index": 0 }]] },
+    "⚙️ Parse Book Content": { "main": [[{ "node": "🖥️ Build KDP-Formatted HTML", "type": "main", "index": 0 }]] },
+    "🖥️ Build KDP-Formatted HTML": {
+      "main": [[
+        { "node": "💻 Render KDP Interior PDF", "type": "main", "index": 0 },
+        { "node": "🧠 phi3 — Design Book Cover", "type": "main", "index": 0 }
+      ]]
+    },
+    "💻 Render KDP Interior PDF": { "main": [[{ "node": "📱 Build EPUB (Kindle Format)", "type": "main", "index": 0 }]] },
+    "📱 Build EPUB (Kindle Format)": { "main": [[{ "node": "📦 Assemble KDP Package", "type": "main", "index": 0 }]] },
+    "🧠 phi3 — Design Book Cover": { "main": [[{ "node": "🎨 Generate Cover Background Image", "type": "main", "index": 0 }]] },
+    "🎨 Generate Cover Background Image": { "main": [[{ "node": "⏳ Wait for Cover Generation", "type": "main", "index": 0 }]] },
+    "⏳ Wait for Cover Generation": { "main": [[{ "node": "🔍 Poll Cover Result", "type": "main", "index": 0 }]] },
+    "🔍 Poll Cover Result": { "main": [[{ "node": "📦 Assemble KDP Package", "type": "main", "index": 0 }]] },
+    "📦 Assemble KDP Package": { "main": [[{ "node": "📊 Write to KDP_Upload_Queue Sheet", "type": "main", "index": 0 }]] },
+    "📊 Write to KDP_Upload_Queue Sheet": { "main": [[{ "node": "📊 Update KDP Queue Status", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1", "saveManualExecutions": true, "executionTimeout": 3600 },
+  "meta": { "description": "Workflow 08A: KDP Book Factory. Generates all 5 book types: Kindle eBooks (with EPUB), Low Content Books (planners/journals), Coloring Books (SD prompts per page), Activity Books, Puzzle Books. Produces KDP-spec PDFs at 300 DPI, EPUB3 for Kindle, AI-generated cover. Writes complete upload package to KDP_Upload_Queue sheet." }
+}

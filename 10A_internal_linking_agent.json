@@ -1,0 +1,317 @@
+{
+  "name": "10A — WordPress Internal Linking Agent (SEO)",
+  "nodes": [
+
+    {
+      "parameters": {
+        "rule": { "interval": [{ "field": "hours", "hoursInterval": 24 }] }
+      },
+      "id": "node_trigger_schedule",
+      "name": "⏰ Daily Internal Link Scan (2 AM)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [200, 400],
+      "notes": "Runs every day at 2 AM. Scans all published posts for internal linking opportunities. Also triggerable via webhook after a new post is created by WF09A."
+    },
+
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "trigger-internal-links",
+        "responseMode": "onReceived",
+        "responseData": "allEntries"
+      },
+      "id": "node_trigger_webhook",
+      "name": "🔔 Webhook — Trigger After New Post",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1.1,
+      "position": [200, 600],
+      "notes": "Called by WF09A immediately after a new blog post is published. Receives post_id of the new post. Triggers an immediate link scan instead of waiting for the daily schedule."
+    },
+
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "https://clearstackstudio.com/wp-json/wp/v2/posts",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "Basic YOUR_WP_BASE64_AUTH" }
+          ]
+        },
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "per_page", "value": "100" },
+            { "name": "status", "value": "publish" },
+            { "name": "fields", "value": "id,title,slug,link,content,excerpt,categories,tags,date" }
+          ]
+        },
+        "options": {}
+      },
+      "id": "node_fetch_all_posts",
+      "name": "📥 Fetch All Published Posts",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [500, 500],
+      "notes": "Fetches all published blog posts from WordPress REST API. Gets content for keyword analysis. With 100 posts max per page — add pagination logic if blog grows beyond 100 posts."
+    },
+
+    {
+      "parameters": {
+        "jsCode": "// Build a clean post index for link analysis\nconst posts = $input.all().map(item => item.json);\n\nconst postIndex = posts.map(post => {\n  // Strip HTML tags from content for keyword extraction\n  const rawContent = (post.content?.rendered || '').replace(/<[^>]+>/g, ' ').replace(/\\s+/g, ' ').trim();\n  const rawExcerpt = (post.excerpt?.rendered || '').replace(/<[^>]+>/g, ' ').trim();\n  \n  // Extract meaningful keywords from title (most important)\n  const titleWords = (post.title?.rendered || '')\n    .toLowerCase()\n    .replace(/[^a-z0-9\\s-]/g, '')\n    .split(/\\s+/)\n    .filter(w => w.length > 3)\n    .filter(w => !['with', 'that', 'this', 'your', 'from', 'have', 'will', 'been', 'they', 'what', 'when', 'which', 'into', 'about', 'more', 'than'].includes(w));\n  \n  // Build keyphrases (2-3 word combinations from title)\n  const keyphrases = [];\n  for (let i = 0; i < titleWords.length - 1; i++) {\n    keyphrases.push(`${titleWords[i]} ${titleWords[i+1]}`);\n    if (i < titleWords.length - 2) {\n      keyphrases.push(`${titleWords[i]} ${titleWords[i+1]} ${titleWords[i+2]}`);\n    }\n  }\n  \n  return {\n    id: post.id,\n    title: post.title?.rendered || '',\n    slug: post.slug,\n    url: post.link,\n    content_text: rawContent.substring(0, 5000), // First 5000 chars for analysis\n    excerpt: rawExcerpt,\n    title_keywords: titleWords,\n    keyphrases: keyphrases,\n    word_count: rawContent.split(/\\s+/).length,\n    existing_internal_links: (post.content?.rendered || '').match(/href=\"https?:\\/\\/clearstackstudio\\.com[^\"]*\"/g) || [],\n    date: post.date\n  };\n});\n\n// Sort by date (newest first)\npostIndex.sort((a, b) => new Date(b.date) - new Date(a.date));\n\nconsole.log(`Built index of ${postIndex.length} posts`);\n\nreturn [{ json: {\n  post_index: postIndex,\n  total_posts: postIndex.length,\n  analysis_timestamp: new Date().toISOString()\n}}];"
+      },
+      "id": "node_build_index",
+      "name": "⚙️ Build Post Index + Extract Keywords",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [760, 500],
+      "notes": "Strips HTML, extracts title keywords and keyphrases, counts existing internal links per post. This index is passed to the AI for intelligent link matching."
+    },
+
+    {
+      "parameters": {
+        "model": "mistral",
+        "messages": {
+          "values": [
+            {
+              "role": "system",
+              "content": "You are an expert SEO specialist focused on internal linking strategy. You analyze blog post indexes and identify the best internal linking opportunities to improve SEO, reduce bounce rate, and build topical authority. You understand that good internal links: (1) use descriptive anchor text containing keywords, (2) connect topically related content, (3) flow naturally within the prose, (4) avoid over-linking (max 3-5 internal links per 1000 words). You never suggest linking a post to itself. Respond in valid JSON only."
+            },
+            {
+              "role": "user",
+              "content": "=Analyze this blog post index and identify internal linking opportunities.\n\nTotal posts: {{$json.total_posts}}\n\nPost Index (id, title, url, keyphrases, existing_links_count):\n{{$json.post_index.map(p => `ID:${p.id} | \"${p.title}\" | ${p.url} | keyphrases: ${p.keyphrases.slice(0,5).join(', ')} | existing_internal_links: ${p.existing_internal_links.length}`).join('\\n')}}\n\nFor each post that has fewer than 3 internal links, identify the best linking opportunities FROM other posts TO this post.\n\nRules:\n- Only suggest links between genuinely related content\n- Anchor text must be natural — a phrase already in the source post's content\n- Never suggest linking a post to itself\n- Prioritize: newer posts linking to older posts (passes authority to established content)\n- Max 2 link suggestions per post pair\n- Confidence: high (keyword exact match in content), medium (topically related), low (tangential)\n- Only return high and medium confidence suggestions\n\nRespond ONLY with this JSON:\n{\n  \"link_suggestions\": [\n    {\n      \"source_post_id\": 123,\n      \"source_post_title\": \"Post that should contain the link\",\n      \"target_post_id\": 456,\n      \"target_post_title\": \"Post being linked to\",\n      \"target_post_url\": \"https://clearstackstudio.com/blog/slug\",\n      \"suggested_anchor_text\": \"exact phrase to hyperlink in source post\",\n      \"placement_hint\": \"Brief description of where in the source post this link should appear\",\n      \"seo_reason\": \"Why this link helps SEO\",\n      \"confidence\": \"high | medium\",\n      \"auto_insert\": true\n    }\n  ],\n  \"posts_needing_links\": [\"list of post titles with fewer than 3 internal links\"],\n  \"summary\": \"Brief analysis of the internal linking health of this blog\"\n}"
+            }
+          ]
+        },
+        "options": { "temperature": 0.3 }
+      },
+      "id": "node_mistral_links",
+      "name": "🧠 mistral — Analyze + Find Link Opportunities",
+      "type": "n8n-nodes-base.ollama",
+      "typeVersion": 1,
+      "position": [1020, 500],
+      "notes": "mistral at low temp (0.3) for consistent, analytical output. Identifies genuine linking opportunities based on keyword overlap and topical relevance. Auto-insert flag = true for high confidence only."
+    },
+
+    {
+      "parameters": {
+        "jsCode": "const raw = $input.first().json;\nconst postIndex = $('⚙️ Build Post Index + Extract Keywords').first().json.post_index;\n\nlet linkData;\ntry {\n  const content = raw?.message?.content || raw?.response || '';\n  const match = content.match(/```json\\n?([\\s\\S]*?)\\n?```/) || content.match(/({[\\s\\S]*})/);\n  linkData = JSON.parse((match ? match[1] || match[0] : content).trim());\n} catch(e) {\n  linkData = { link_suggestions: [], summary: 'Parse error: ' + e.message };\n}\n\nconst suggestions = linkData.link_suggestions || [];\n\n// Separate auto-insertable (high confidence) from review-needed (medium)\nconst autoInsert = suggestions.filter(s => s.auto_insert && s.confidence === 'high');\nconst needsReview = suggestions.filter(s => !s.auto_insert || s.confidence === 'medium');\n\nconsole.log(`Total suggestions: ${suggestions.length} | Auto-insert: ${autoInsert.length} | Review needed: ${needsReview.length}`);\n\nreturn [{ json: {\n  all_suggestions: suggestions,\n  auto_insert: autoInsert,\n  needs_review: needsReview,\n  auto_insert_count: autoInsert.length,\n  review_count: needsReview.length,\n  posts_needing_links: linkData.posts_needing_links || [],\n  summary: linkData.summary || '',\n  post_index: postIndex,\n  _parsed: true\n}}];"
+      },
+      "id": "node_parse_suggestions",
+      "name": "⚙️ Parse + Split Suggestions",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1280, 500]
+    },
+
+    {
+      "parameters": {
+        "conditions": {
+          "conditions": [{ "leftValue": "={{ $json.auto_insert_count }}", "rightValue": 0, "operator": { "type": "number", "operation": "gt" } }]
+        }
+      },
+      "id": "node_has_auto",
+      "name": "🔀 Auto-Insert Links?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1540, 380]
+    },
+
+    {
+      "parameters": {
+        "jsCode": "// For each auto-insert suggestion, fetch the source post content\n// and inject the internal link\nconst data = $input.first().json;\nconst suggestions = data.auto_insert || [];\n\n// Return each suggestion as a separate item for parallel processing\nreturn suggestions.map(s => ({ json: {\n  ...s,\n  post_index: data.post_index,\n  _ready_to_insert: true\n}}));"
+      },
+      "id": "node_split_auto",
+      "name": "⚙️ Split Auto-Insert Jobs",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1800, 280]
+    },
+
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://clearstackstudio.com/wp-json/wp/v2/posts/{{ $json.source_post_id }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [{ "name": "Authorization", "value": "Basic YOUR_WP_BASE64_AUTH" }]
+        },
+        "options": {}
+      },
+      "id": "node_fetch_source_post",
+      "name": "📥 Fetch Source Post Content",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [2060, 280],
+      "notes": "Fetches the full content of the post that will receive the new internal link."
+    },
+
+    {
+      "parameters": {
+        "jsCode": "// Inject the internal link into the post content\nconst suggestion = $('⚙️ Split Auto-Insert Jobs').first().json;\nconst postData = $input.first().json;\n\nconst anchorText = suggestion.suggested_anchor_text;\nconst targetUrl = suggestion.target_post_url;\nconst sourceContent = postData.content?.raw || postData.content?.rendered || '';\n\n// Build the link HTML\nconst linkHtml = `<a href=\"${targetUrl}\">${anchorText}</a>`;\n\n// Replace FIRST occurrence of anchor text with linked version\n// Only replace if not already inside an anchor tag\nconst alreadyLinked = sourceContent.includes(`href=\"${targetUrl}\"`);\n\nif (alreadyLinked) {\n  return [{ json: {\n    skipped: true,\n    reason: 'Link already exists in post',\n    post_id: suggestion.source_post_id,\n    target_url: targetUrl\n  }}];\n}\n\n// Case-insensitive replace of first occurrence\nconst anchorRegex = new RegExp(`(?<!href=\"[^\"]*>)(?<!</a>)${anchorText.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&')}(?![^<]*<\\/a>)`, 'i');\nconst updatedContent = sourceContent.replace(anchorRegex, linkHtml);\n\nif (updatedContent === sourceContent) {\n  // Exact phrase not found in content — skip\n  return [{ json: {\n    skipped: true,\n    reason: `Anchor text '${anchorText}' not found in post content`,\n    post_id: suggestion.source_post_id\n  }}];\n}\n\nreturn [{ json: {\n  skipped: false,\n  post_id: suggestion.source_post_id,\n  post_title: suggestion.source_post_title,\n  target_post_title: suggestion.target_post_title,\n  target_url: targetUrl,\n  anchor_text: anchorText,\n  updated_content: updatedContent,\n  confidence: suggestion.confidence,\n  seo_reason: suggestion.seo_reason\n}}];"
+      },
+      "id": "node_inject_link",
+      "name": "⚙️ Inject Link Into Content",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2320, 280],
+      "notes": "Finds the anchor text phrase in the post content and wraps it with an anchor tag. Skips if: link already exists, or anchor text not found in content. Only touches the FIRST occurrence."
+    },
+
+    {
+      "parameters": {
+        "conditions": {
+          "conditions": [{ "leftValue": "={{ $json.skipped }}", "rightValue": false, "operator": { "type": "boolean", "operation": "true" } }]
+        }
+      },
+      "id": "node_skip_check",
+      "name": "🔀 Link Insertable?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [2580, 280]
+    },
+
+    {
+      "parameters": {
+        "method": "PUT",
+        "url": "=https://clearstackstudio.com/wp-json/wp/v2/posts/{{ $json.post_id }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "Basic YOUR_WP_BASE64_AUTH" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "body": "={\n  \"content\": {{ JSON.stringify($json.updated_content) }}\n}",
+        "options": {}
+      },
+      "id": "node_update_post",
+      "name": "✏️ Update Post With New Link",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [2840, 200],
+      "notes": "Updates the WordPress post via REST API with the new internal link injected. Only updates content field — no other post data is touched."
+    },
+
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": { "value": "YOUR_GOOGLE_SHEET_ID_HERE" },
+        "sheetName": { "value": "Internal_Links_Log" },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Date": "={{ new Date().toISOString().split('T')[0] }}",
+            "Action": "AUTO_INSERTED",
+            "Source_Post": "={{ $json.post_title }}",
+            "Source_Post_ID": "={{ $json.post_id }}",
+            "Target_Post": "={{ $json.target_post_title }}",
+            "Target_URL": "={{ $json.target_url }}",
+            "Anchor_Text": "={{ $json.anchor_text }}",
+            "Confidence": "={{ $json.confidence }}",
+            "SEO_Reason": "={{ $json.seo_reason }}",
+            "Status": "INSERTED"
+          }
+        },
+        "options": {}
+      },
+      "id": "node_log_inserted",
+      "name": "📊 Log Auto-Inserted Links",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [3100, 200]
+    },
+
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": { "value": "YOUR_GOOGLE_SHEET_ID_HERE" },
+        "sheetName": { "value": "Internal_Links_Log" },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Date": "={{ new Date().toISOString().split('T')[0] }}",
+            "Action": "NEEDS_REVIEW",
+            "Source_Post": "={{ $json.source_post_title }}",
+            "Source_Post_ID": "={{ $json.source_post_id }}",
+            "Target_Post": "={{ $json.target_post_title }}",
+            "Target_URL": "={{ $json.target_post_url }}",
+            "Anchor_Text": "={{ $json.suggested_anchor_text }}",
+            "Confidence": "={{ $json.confidence }}",
+            "SEO_Reason": "={{ $json.seo_reason }}",
+            "Placement_Hint": "={{ $json.placement_hint }}",
+            "Status": "PENDING_REVIEW",
+            "YOUR_ACTION": "APPROVE or SKIP"
+          }
+        },
+        "options": {}
+      },
+      "id": "node_log_review",
+      "name": "📊 Log Links Needing Review",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [1800, 620],
+      "notes": "Medium-confidence suggestions land here. Open Internal_Links_Log tab, review each row, set YOUR_ACTION to APPROVE or SKIP. A future polling workflow can auto-insert approved ones."
+    },
+
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": { "value": "YOUR_GOOGLE_SHEET_ID_HERE" },
+        "sheetName": { "value": "Internal_Links_Log" },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Date": "={{ new Date().toISOString().split('T')[0] }}",
+            "Action": "SCAN_SUMMARY",
+            "Source_Post": "SYSTEM",
+            "Status": "={{ `Total posts: ${$('⚙️ Parse + Split Suggestions').first().json.auto_insert_count + $('⚙️ Parse + Split Suggestions').first().json.review_count} suggestions | Auto-inserted: ${$('⚙️ Parse + Split Suggestions').first().json.auto_insert_count} | Needs review: ${$('⚙️ Parse + Split Suggestions').first().json.review_count}` }}",
+            "SEO_Reason": "={{ $('⚙️ Parse + Split Suggestions').first().json.summary }}"
+          }
+        },
+        "options": {}
+      },
+      "id": "node_log_summary",
+      "name": "📊 Log Daily Scan Summary",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [1800, 780]
+    }
+
+  ],
+  "connections": {
+    "⏰ Daily Internal Link Scan (2 AM)": { "main": [[{ "node": "📥 Fetch All Published Posts", "type": "main", "index": 0 }]] },
+    "🔔 Webhook — Trigger After New Post": { "main": [[{ "node": "📥 Fetch All Published Posts", "type": "main", "index": 0 }]] },
+    "📥 Fetch All Published Posts": { "main": [[{ "node": "⚙️ Build Post Index + Extract Keywords", "type": "main", "index": 0 }]] },
+    "⚙️ Build Post Index + Extract Keywords": { "main": [[{ "node": "🧠 mistral — Analyze + Find Link Opportunities", "type": "main", "index": 0 }]] },
+    "🧠 mistral — Analyze + Find Link Opportunities": { "main": [[{ "node": "⚙️ Parse + Split Suggestions", "type": "main", "index": 0 }]] },
+    "⚙️ Parse + Split Suggestions": {
+      "main": [[
+        { "node": "🔀 Auto-Insert Links?", "type": "main", "index": 0 },
+        { "node": "📊 Log Links Needing Review", "type": "main", "index": 0 },
+        { "node": "📊 Log Daily Scan Summary", "type": "main", "index": 0 }
+      ]]
+    },
+    "🔀 Auto-Insert Links?": {
+      "main": [
+        [],
+        [{ "node": "⚙️ Split Auto-Insert Jobs", "type": "main", "index": 0 }]
+      ]
+    },
+    "⚙️ Split Auto-Insert Jobs": { "main": [[{ "node": "📥 Fetch Source Post Content", "type": "main", "index": 0 }]] },
+    "📥 Fetch Source Post Content": { "main": [[{ "node": "⚙️ Inject Link Into Content", "type": "main", "index": 0 }]] },
+    "⚙️ Inject Link Into Content": { "main": [[{ "node": "🔀 Link Insertable?", "type": "main", "index": 0 }]] },
+    "🔀 Link Insertable?": {
+      "main": [
+        [],
+        [{ "node": "✏️ Update Post With New Link", "type": "main", "index": 0 }]
+      ]
+    },
+    "✏️ Update Post With New Link": { "main": [[{ "node": "📊 Log Auto-Inserted Links", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1", "saveManualExecutions": true, "executionTimeout": 600 },
+  "meta": { "description": "Workflow 10A: Internal Linking Agent. Daily scan of all WordPress posts. mistral identifies genuine linking opportunities based on keyword overlap and topical relevance. High-confidence links auto-inserted via WP REST API. Medium-confidence suggestions logged to Internal_Links_Log sheet for your review. Triggered by schedule (2 AM daily) or webhook (immediately after new post from WF09A)." }
+}

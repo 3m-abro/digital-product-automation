@@ -1,0 +1,278 @@
+{
+  "name": "08B — Book Auto-Publisher (D2D + PublishDrive) + KDP Upload Guide",
+  "nodes": [
+
+    {
+      "parameters": {
+        "rule": { "interval": [{ "field": "hours", "hoursInterval": 4 }] }
+      },
+      "id": "node_trigger",
+      "name": "⏰ Check for Books Ready to Publish (Every 4h)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [200, 400]
+    },
+
+    {
+      "parameters": {
+        "operation": "read",
+        "documentId": { "value": "YOUR_GOOGLE_SHEET_ID_HERE" },
+        "sheetName": { "value": "KDP_Upload_Queue" },
+        "filtersUI": {
+          "values": [
+            { "lookupColumn": "Ready_For_Upload", "lookupValue": "true" },
+            { "lookupColumn": "D2D_Upload_Status", "lookupValue": "PENDING" }
+          ]
+        },
+        "options": {}
+      },
+      "id": "node_read_queue",
+      "name": "📊 Read Books Ready to Publish",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [440, 400]
+    },
+
+    {
+      "parameters": {
+        "conditions": {
+          "conditions": [{
+            "leftValue": "={{ $items().length }}",
+            "rightValue": 0,
+            "operator": { "type": "number", "operation": "gt" }
+          }]
+        }
+      },
+      "id": "node_has_books",
+      "name": "🔀 Books Ready?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [680, 400]
+    },
+
+    {
+      "parameters": {
+        "jsCode": "// Download cover image from URL and prepare all files\nconst book = $input.first().json;\n\n// Build the complete metadata object for publishing APIs\nconst publishData = {\n  product_id: book.Product_ID,\n  book_type: book.Book_Type,\n  \n  // Core metadata\n  title: book.Title,\n  subtitle: book.Subtitle || '',\n  author: book.Author || 'ClearStack Studio',\n  description_html: book.Description_HTML || book.Title,\n  keywords: (book.Keywords || '').split(', ').filter(Boolean),\n  categories: (book.Categories || '').split(' | ').filter(Boolean),\n  price_usd: parseFloat(book.Price_USD) || 4.99,\n  language: 'en',\n  \n  // File paths\n  interior_pdf: book.Interior_PDF,\n  epub_file: book.EPUB_File,\n  cover_url: book.Cover_Image_URL,\n  \n  // KDP specific\n  kdp_select: false, // Set to true for KDP exclusivity - prevents D2D\n  page_count: parseInt(book.Page_Count) || 100,\n  \n  // Platform routing\n  is_ebook: book.Book_Type === 'ebook',\n  is_print: book.Book_Type !== 'ebook'\n};\n\nreturn [{ json: publishData }];"
+      },
+      "id": "node_prep_publish",
+      "name": "⚙️ Prep Publish Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [920, 400]
+    },
+
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.draft2digital.com/v1/books",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "Bearer YOUR_DRAFT2DIGITAL_API_TOKEN" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "body": "={\n  \"title\": \"{{ $json.title }}\",\n  \"subtitle\": \"{{ $json.subtitle }}\",\n  \"contributors\": [\n    {\n      \"role\": \"Author\",\n      \"first_name\": \"ClearStack\",\n      \"last_name\": \"Studio\"\n    }\n  ],\n  \"description\": \"{{ $json.description_html }}\",\n  \"language\": \"{{ $json.language }}\",\n  \"keywords\": {{ JSON.stringify($json.keywords) }},\n  \"bisac_codes\": [\"BUS000000\"],\n  \"price\": {{ $json.price_usd }},\n  \"currency\": \"USD\",\n  \"is_public_domain\": false,\n  \"adult_content\": false,\n  \"distribution\": {\n    \"apple_books\": true,\n    \"barnes_noble\": true,\n    \"kobo\": true,\n    \"scribd\": true,\n    \"overdrive\": true,\n    \"bibliotheca\": true,\n    \"baker_taylor\": true,\n    \"tolino\": true\n  }\n}",
+        "options": {}
+      },
+      "id": "node_d2d_create",
+      "name": "📚 Draft2Digital — Create Book",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1180, 200],
+      "notes": "SETUP: Get API token at draft2digital.com/account/api. Creates book record across 40+ stores including Apple Books, Barnes & Noble, Kobo, Scribd. Free to use — they take 10% of royalties."
+    },
+
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.draft2digital.com/v1/books/{{ $json.id }}/files",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "Bearer YOUR_DRAFT2DIGITAL_API_TOKEN" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "body": "={\n  \"epub_url\": \"{{ $('⚙️ Prep Publish Data').first().json.epub_file }}\",\n  \"cover_url\": \"{{ $('⚙️ Prep Publish Data').first().json.cover_url }}\"\n}",
+        "options": {}
+      },
+      "id": "node_d2d_upload",
+      "name": "📚 Draft2Digital — Upload Files",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1440, 200],
+      "notes": "Uploads EPUB and cover to Draft2Digital. Uses the book ID from previous step."
+    },
+
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.draft2digital.com/v1/books/{{ $('📚 Draft2Digital — Create Book').first().json.id }}/publish",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "Bearer YOUR_DRAFT2DIGITAL_API_TOKEN" }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "body": "={ \"publish_to_all\": true }",
+        "options": {}
+      },
+      "id": "node_d2d_publish",
+      "name": "📚 Draft2Digital — Publish to All Stores",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1700, 200],
+      "notes": "Triggers distribution to all 40+ stores. D2D handles Apple Books, B&N, Kobo, Scribd, and more simultaneously."
+    },
+
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.publishdrive.com/v2/books",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "Bearer YOUR_PUBLISHDRIVE_API_TOKEN" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "body": "={\n  \"metadata\": {\n    \"title\": \"{{ $json.title }}\",\n    \"subtitle\": \"{{ $json.subtitle }}\",\n    \"authors\": [{ \"name\": \"{{ $json.author }}\", \"role\": \"Author\" }],\n    \"description\": \"{{ $json.description_html }}\",\n    \"language\": \"en\",\n    \"keywords\": {{ JSON.stringify($json.keywords) }},\n    \"bisac\": [\"BUS000000\"],\n    \"adult\": false\n  },\n  \"pricing\": [\n    { \"currency\": \"USD\", \"price\": {{ $json.price_usd }} },\n    { \"currency\": \"EUR\", \"price\": {{ Math.round($json.price_usd * 0.92 * 100) / 100 }} },\n    { \"currency\": \"GBP\", \"price\": {{ Math.round($json.price_usd * 0.79 * 100) / 100 }} }\n  ],\n  \"distribution\": {\n    \"channels\": [\"amazon\", \"apple\", \"google_play\", \"kobo\", \"scribd\", \"barnes_noble\", \"overdrive\"],\n    \"territories\": \"WORLD\"\n  }\n}",
+        "options": {}
+      },
+      "id": "node_pd_create",
+      "name": "🌍 PublishDrive — Create Book",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1180, 420],
+      "notes": "SETUP: Get API token at publishdrive.com. PublishDrive distributes to 400+ stores globally including Google Play Books, Scribd subscription, and international markets. ~70% royalty rate. Monthly fee applies."
+    },
+
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.publishdrive.com/v2/books/{{ $json.id }}/upload",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "Bearer YOUR_PUBLISHDRIVE_API_TOKEN" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "body": "={\n  \"epub_url\": \"{{ $('⚙️ Prep Publish Data').first().json.epub_file }}\",\n  \"cover_url\": \"{{ $('⚙️ Prep Publish Data').first().json.cover_url }}\"\n}",
+        "options": {}
+      },
+      "id": "node_pd_upload",
+      "name": "🌍 PublishDrive — Upload + Publish",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1440, 420]
+    },
+
+    {
+      "parameters": {
+        "jsCode": "// Generate the complete KDP manual upload guide\n// This is the 5-minute guided checklist for the user\nconst book = $('⚙️ Prep Publish Data').first().json;\nconst d2dResult = $('📚 Draft2Digital — Publish to All Stores').first().json;\nconst pdResult = $('🌍 PublishDrive — Upload + Publish').first().json;\n\n// Format keywords as KDP expects (7 keyword fields)\nconst keywords = book.keywords || [];\nconst kdpKeywords = keywords.slice(0, 7);\nwhile (kdpKeywords.length < 7) kdpKeywords.push('');\n\n// Build the step-by-step guide\nconst uploadGuide = {\n  product_id: book.product_id,\n  title: book.title,\n  \n  // Step-by-step KDP upload instructions\n  kdp_upload_steps: [\n    {\n      step: 1,\n      action: 'Go to kdp.amazon.com → Click + Create → Select eBook or Paperback',\n      notes: book.is_ebook ? 'Select Kindle eBook' : 'Select Paperback'\n    },\n    {\n      step: 2,\n      action: 'Book Details — Language',\n      value: 'English',\n      field: 'Language'\n    },\n    {\n      step: 3,\n      action: 'Book Details — Title',\n      value: book.title,\n      field: 'Book Title'\n    },\n    {\n      step: 4,\n      action: 'Book Details — Subtitle',\n      value: book.subtitle || '(leave blank)',\n      field: 'Subtitle'\n    },\n    {\n      step: 5,\n      action: 'Book Details — Author',\n      value: 'ClearStack Studio',\n      field: 'Primary Author'\n    },\n    {\n      step: 6,\n      action: 'Book Details — Description',\n      value: 'COPY FROM: ' + book.description_html?.substring(0, 100) + '...',\n      field: 'Book Description',\n      notes: 'Paste the full HTML description from your KDP_Upload_Queue sheet'\n    },\n    {\n      step: 7,\n      action: 'Publishing Rights',\n      value: 'I own the copyright and I hold the necessary publishing rights',\n      field: 'Publishing Rights'\n    },\n    {\n      step: 8,\n      action: 'Keywords — Enter all 7',\n      value: kdpKeywords,\n      field: 'Keywords (7 fields)'\n    },\n    {\n      step: 9,\n      action: 'Categories — Select 2 categories',\n      value: (book.categories || []).slice(0, 2),\n      field: 'Categories'\n    },\n    {\n      step: 10,\n      action: 'Age & Grade Range',\n      value: 'Leave blank unless children\\'s book',\n      field: 'Age Range'\n    },\n    {\n      step: 11,\n      action: 'Book Content — Upload manuscript',\n      value: book.epub_file || book.interior_pdf,\n      field: 'Upload eBook Manuscript / Interior PDF',\n      notes: book.is_ebook ? 'Upload the .epub file' : 'Upload the interior PDF'\n    },\n    {\n      step: 12,\n      action: 'Book Cover — Upload cover',\n      value: 'Download from: ' + book.cover_url,\n      field: 'Book Cover',\n      notes: 'Download the cover image first, then upload. Min 2560x1600px.'\n    },\n    {\n      step: 13,\n      action: 'KDP Select Enrollment',\n      value: book.kdp_select ? 'Enroll (90-day exclusivity)' : 'Do NOT enroll (we publish on D2D too)',\n      field: 'KDP Select'\n    },\n    {\n      step: 14,\n      action: 'Territories',\n      value: 'All territories (Worldwide rights)',\n      field: 'Territories'\n    },\n    {\n      step: 15,\n      action: 'Royalty & Pricing',\n      value: `$${book.price_usd} USD — Select 70% royalty if price is $2.99-$9.99, else 35%`,\n      field: 'Royalty + List Price'\n    },\n    {\n      step: 16,\n      action: 'Click Publish',\n      value: 'Takes 24-72 hours to go live on Amazon',\n      notes: 'Come back and enter the ASIN in your KDP_Upload_Queue sheet'\n    }\n  ],\n  \n  // Auto-platform results\n  auto_published: {\n    draft2digital: {\n      success: !!d2dResult?.id,\n      book_id: d2dResult?.id,\n      stores: ['Apple Books', 'Barnes & Noble', 'Kobo', 'Scribd', 'OverDrive', 'Tolino', '35+ more'],\n      notes: 'Will go live within 24-72 hours per store'\n    },\n    publishdrive: {\n      success: !!pdResult?.id,\n      book_id: pdResult?.id,\n      stores: ['Google Play Books', 'Scribd', 'and 400+ more'],\n      notes: 'Global distribution including emerging markets'\n    }\n  },\n  \n  estimated_royalties: {\n    amazon_kdp_70pct: Math.round(book.price_usd * 0.70 * 100) / 100,\n    amazon_kdp_35pct: Math.round(book.price_usd * 0.35 * 100) / 100,\n    d2d_65pct: Math.round(book.price_usd * 0.65 * 100) / 100,\n    publishdrive_70pct: Math.round(book.price_usd * 0.70 * 100) / 100\n  },\n  \n  generated_at: new Date().toISOString()\n};\n\nreturn [{ json: uploadGuide }];"
+      },
+      "id": "node_build_guide",
+      "name": "📋 Build KDP Upload Guide",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1960, 400],
+      "notes": "Generates the complete step-by-step KDP upload guide with all values pre-filled. You literally just copy-paste each field. Takes ~5 minutes per book."
+    },
+
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": { "value": "YOUR_GOOGLE_SHEET_ID_HERE" },
+        "sheetName": { "value": "KDP_Manual_Upload_Guide" },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Product_ID": "={{ $json.product_id }}",
+            "Title": "={{ $json.title }}",
+            "Step_1": "={{ $json.kdp_upload_steps[0].action }}",
+            "Step_3_Title": "={{ $json.kdp_upload_steps[2].value }}",
+            "Step_4_Subtitle": "={{ $json.kdp_upload_steps[3].value }}",
+            "Step_8_Keywords": "={{ $json.kdp_upload_steps[7].value.join(' | ') }}",
+            "Step_9_Categories": "={{ $json.kdp_upload_steps[8].value.join(' | ') }}",
+            "Step_11_Manuscript": "={{ $json.kdp_upload_steps[10].value }}",
+            "Step_12_Cover_URL": "={{ $json.kdp_upload_steps[11].value }}",
+            "Step_15_Price": "={{ $json.kdp_upload_steps[14].value }}",
+            "Royalty_70pct": "={{ $json.estimated_royalties.amazon_kdp_70pct }}",
+            "D2D_Published": "={{ $json.auto_published.draft2digital.success }}",
+            "D2D_Book_ID": "={{ $json.auto_published.draft2digital.book_id }}",
+            "PD_Published": "={{ $json.auto_published.publishdrive.success }}",
+            "PD_Book_ID": "={{ $json.auto_published.publishdrive.book_id }}",
+            "KDP_Uploaded": "PENDING - DO THIS MANUALLY",
+            "ASIN": "",
+            "Created_At": "={{ $json.generated_at }}"
+          }
+        },
+        "options": {}
+      },
+      "id": "node_write_guide",
+      "name": "📊 Write KDP Upload Guide to Sheets",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [2220, 400],
+      "notes": "Writes pre-filled KDP upload guide to a dedicated sheet tab. Open this tab, follow each step, copy-paste each value into KDP dashboard."
+    },
+
+    {
+      "parameters": {
+        "operation": "update",
+        "documentId": { "value": "YOUR_GOOGLE_SHEET_ID_HERE" },
+        "sheetName": { "value": "KDP_Upload_Queue" },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "D2D_Upload_Status": "={{ $json.auto_published.draft2digital.success ? 'PUBLISHED' : 'FAILED' }}",
+            "PublishDrive_Status": "={{ $json.auto_published.publishdrive.success ? 'PUBLISHED' : 'FAILED' }}",
+            "KDP_Upload_Status": "MANUAL_REQUIRED"
+          }
+        },
+        "where": {
+          "values": [{ "lookupColumn": "Product_ID", "lookupValue": "={{ $json.product_id }}" }]
+        },
+        "options": {}
+      },
+      "id": "node_update_status",
+      "name": "📊 Update Queue Status",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [2480, 400]
+    }
+
+  ],
+  "connections": {
+    "⏰ Check for Books Ready to Publish (Every 4h)": { "main": [[{ "node": "📊 Read Books Ready to Publish", "type": "main", "index": 0 }]] },
+    "📊 Read Books Ready to Publish": { "main": [[{ "node": "🔀 Books Ready?", "type": "main", "index": 0 }]] },
+    "🔀 Books Ready?": { "main": [[{ "node": "⚙️ Prep Publish Data", "type": "main", "index": 0 }]] },
+    "⚙️ Prep Publish Data": {
+      "main": [[
+        { "node": "📚 Draft2Digital — Create Book", "type": "main", "index": 0 },
+        { "node": "🌍 PublishDrive — Create Book", "type": "main", "index": 0 }
+      ]]
+    },
+    "📚 Draft2Digital — Create Book": { "main": [[{ "node": "📚 Draft2Digital — Upload Files", "type": "main", "index": 0 }]] },
+    "📚 Draft2Digital — Upload Files": { "main": [[{ "node": "📚 Draft2Digital — Publish to All Stores", "type": "main", "index": 0 }]] },
+    "📚 Draft2Digital — Publish to All Stores": { "main": [[{ "node": "📋 Build KDP Upload Guide", "type": "main", "index": 0 }]] },
+    "🌍 PublishDrive — Create Book": { "main": [[{ "node": "🌍 PublishDrive — Upload + Publish", "type": "main", "index": 0 }]] },
+    "🌍 PublishDrive — Upload + Publish": { "main": [[{ "node": "📋 Build KDP Upload Guide", "type": "main", "index": 0 }]] },
+    "📋 Build KDP Upload Guide": { "main": [[{ "node": "📊 Write KDP Upload Guide to Sheets", "type": "main", "index": 0 }]] },
+    "📊 Write KDP Upload Guide to Sheets": { "main": [[{ "node": "📊 Update Queue Status", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1", "saveManualExecutions": true },
+  "meta": { "description": "Workflow 08B: Book auto-publisher. Auto-publishes to Draft2Digital (40+ stores) and PublishDrive (400+ stores) via API. Generates pre-filled KDP upload guide with copy-paste values for the 5-minute manual KDP upload. Updates queue status in Google Sheets." }
+}

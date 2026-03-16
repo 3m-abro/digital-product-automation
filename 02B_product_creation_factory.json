@@ -1,0 +1,636 @@
+{
+  "name": "02B — Automated Product Creation Factory",
+  "nodes": [
+
+    {
+      "parameters": {
+        "rule": { "interval": [{ "field": "hours", "hoursInterval": 6 }] }
+      },
+      "id": "node_trigger",
+      "name": "⏰ Poll for Approved Products (Every 6h)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [200, 400],
+      "notes": "Replaces Workflow 02's trigger. Checks Sheets every 6h for approved products."
+    },
+
+    {
+      "parameters": {
+        "operation": "read",
+        "documentId": { "value": "YOUR_GOOGLE_SHEET_ID_HERE" },
+        "sheetName": { "value": "Research_Opportunities" },
+        "filtersUI": {
+          "values": [
+            { "lookupColumn": "APPROVED", "lookupValue": "YES" },
+            { "lookupColumn": "Status", "lookupValue": "Research Complete" }
+          ]
+        },
+        "options": {}
+      },
+      "id": "node_read_approved",
+      "name": "📊 Read Approved Products",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [440, 400],
+      "notes": "Reads approved products from Research_Opportunities tab."
+    },
+
+    {
+      "parameters": {
+        "conditions": {
+          "conditions": [{
+            "leftValue": "={{ $items().length }}",
+            "rightValue": 0,
+            "operator": { "type": "number", "operation": "gt" }
+          }]
+        }
+      },
+      "id": "node_has_items",
+      "name": "🔀 Any Approved?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [680, 400]
+    },
+
+    {
+      "parameters": {
+        "jsCode": "// Route product to correct creation pipeline based on category\nconst product = $input.first().json;\nconst category = (product.Category || '').toLowerCase();\n\nlet route = 'ebook';\nif (category.includes('ai art') || category.includes('image')) route = 'ai_art';\nelse if (category.includes('printable') || category.includes('template')) route = 'printable';\nelse if (category.includes('notion') || category.includes('canva')) route = 'notion';\nelse if (category.includes('ebook') || category.includes('guide')) route = 'ebook';\n\nreturn [{ json: { ...product, _route: route, _started_at: new Date().toISOString() } }];"
+      },
+      "id": "node_router_prep",
+      "name": "⚙️ Detect Product Type",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [920, 400],
+      "notes": "Reads the Category field and sets _route for the Switch node."
+    },
+
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            { "conditions": { "conditions": [{ "leftValue": "={{ $json._route }}", "rightValue": "ai_art", "operator": { "type": "string", "operation": "equals" } }] }, "renameOutput": true, "outputKey": "AI Art" },
+            { "conditions": { "conditions": [{ "leftValue": "={{ $json._route }}", "rightValue": "ebook", "operator": { "type": "string", "operation": "equals" } }] }, "renameOutput": true, "outputKey": "eBook" },
+            { "conditions": { "conditions": [{ "leftValue": "={{ $json._route }}", "rightValue": "printable", "operator": { "type": "string", "operation": "equals" } }] }, "renameOutput": true, "outputKey": "Printable" },
+            { "conditions": { "conditions": [{ "leftValue": "={{ $json._route }}", "rightValue": "notion", "operator": { "type": "string", "operation": "equals" } }] }, "renameOutput": true, "outputKey": "Notion" }
+          ]
+        },
+        "options": {}
+      },
+      "id": "node_switch",
+      "name": "🔀 Route by Product Type",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [1160, 400],
+      "notes": "Splits workflow into 4 parallel creation pipelines."
+    },
+
+    {
+      "parameters": {
+        "model": "phi3",
+        "messages": {
+          "values": [
+            {
+              "role": "system",
+              "content": "You are an expert AI art director. You create precise, diverse Stable Diffusion image generation prompts for commercial digital art packs. Respond in valid JSON only."
+            },
+            {
+              "role": "user",
+              "content": "=Create a pack of 12 diverse Stable Diffusion prompts for this AI Art product:\n\nProduct: {{$json.Product_Name}}\nKeyword: {{$json.Target_Keyword}}\nDescription: {{$json.Description}}\n\nRequirements:\n- Each image must be UNIQUE in style/composition\n- Commercial use safe (no celebrity likenesses)\n- High quality, sellable art\n- Mix of styles: realistic, artistic, watercolor, digital art, etc.\n\nRespond ONLY with this JSON:\n{\n  \"pack_name\": \"product name\",\n  \"style_theme\": \"overall aesthetic\",\n  \"prompts\": [\n    {\n      \"id\": 1,\n      \"style\": \"watercolor\",\n      \"prompt\": \"full detailed SD prompt, masterpiece, high quality, 8k...\",\n      \"negative_prompt\": \"blurry, watermark, text, signature, low quality\",\n      \"filename\": \"image_01_watercolor\"\n    }\n  ],\n  \"cover_prompt\": \"special prompt for the pack cover/mockup image\",\n  \"suggested_price\": 9.99\n}"
+            }
+          ]
+        },
+        "options": { "temperature": 0.85 }
+      },
+      "id": "node_ai_art_prompts",
+      "name": "🧠 phi3 — Generate Art Prompts",
+      "type": "n8n-nodes-base.ollama",
+      "typeVersion": 1,
+      "position": [1420, 100],
+      "notes": "phi3 generates 12 diverse SD prompts for the AI art pack. Each prompt targets a different style."
+    },
+
+    {
+      "parameters": {
+        "jsCode": "// Parse phi3 art prompts and prepare for image generation\nconst raw = $input.first().json;\nconst product = $('🔀 Route by Product Type').first().json;\n\nlet promptData;\ntry {\n  const content = raw?.message?.content || raw?.response || '';\n  const match = content.match(/```json\\n?([\\s\\S]*?)\\n?```/) || content.match(/({[\\s\\S]*})/);\n  promptData = JSON.parse((match ? match[1] || match[0] : content).trim());\n} catch(e) {\n  promptData = { prompts: [], error: e.message };\n}\n\n// Return each prompt as a separate item for parallel processing\nconst items = [];\nfor (const p of (promptData.prompts || [])) {\n  items.push({\n    json: {\n      ...p,\n      pack_name: promptData.pack_name,\n      style_theme: promptData.style_theme,\n      cover_prompt: promptData.cover_prompt,\n      suggested_price: promptData.suggested_price,\n      product_id: product.Product_Name?.toLowerCase().replace(/\\s+/g, '_'),\n      original_product: product\n    }\n  });\n}\nreturn items.length > 0 ? items : [{ json: { error: 'No prompts generated', product } }];"
+      },
+      "id": "node_parse_art_prompts",
+      "name": "⚙️ Parse & Split Art Prompts",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1680, 100],
+      "notes": "Parses phi3 output and splits into individual items — one per image to generate."
+    },
+
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.replicate.com/v1/predictions",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "Token YOUR_REPLICATE_API_TOKEN" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "body": "={\n  \"version\": \"ac732df83cea7fff18b8472768c88ad041fa750ff7682a21affe81863cbe77e4\",\n  \"input\": {\n    \"prompt\": \"{{ $json.prompt }}\",\n    \"negative_prompt\": \"{{ $json.negative_prompt }}\",\n    \"width\": 1024,\n    \"height\": 1024,\n    \"num_outputs\": 1,\n    \"scheduler\": \"DPMSolverMultistep\",\n    \"num_inference_steps\": 25,\n    \"guidance_scale\": 7.5\n  }\n}",
+        "options": {}
+      },
+      "id": "node_replicate_generate",
+      "name": "🎨 Replicate — Generate Image",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1940, 60],
+      "notes": "SETUP: Get free API token at replicate.com. Uses SDXL model. Free tier includes $5 credits (~500 images). Version hash is SDXL base — update if needed."
+    },
+
+    {
+      "parameters": {
+        "amount": 30,
+        "unit": "seconds"
+      },
+      "id": "node_wait_replicate",
+      "name": "⏳ Wait 30s for Replicate",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1,
+      "position": [2200, 60],
+      "notes": "Replicate runs async. Wait 30s then poll for result."
+    },
+
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://api.replicate.com/v1/predictions/{{ $json.id }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "Token YOUR_REPLICATE_API_TOKEN" }
+          ]
+        },
+        "options": {}
+      },
+      "id": "node_replicate_poll",
+      "name": "🔍 Poll Replicate Result",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [2460, 60],
+      "notes": "Polls Replicate for the completed image URL."
+    },
+
+    {
+      "parameters": {
+        "conditions": {
+          "conditions": [{
+            "leftValue": "={{ $json.status }}",
+            "rightValue": "succeeded",
+            "operator": { "type": "string", "operation": "equals" }
+          }]
+        }
+      },
+      "id": "node_check_replicate",
+      "name": "🔀 Replicate Done?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [2700, 60],
+      "notes": "If succeeded → extract image URL. If not → try HuggingFace fallback."
+    },
+
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api-inference.huggingface.co/models/stabilityai/stable-diffusion-xl-base-1.0",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "Bearer YOUR_HUGGINGFACE_API_TOKEN" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "body": "={\n  \"inputs\": \"{{ $json.prompt }}\",\n  \"parameters\": {\n    \"negative_prompt\": \"{{ $json.negative_prompt }}\",\n    \"width\": 1024,\n    \"height\": 1024,\n    \"num_inference_steps\": 20\n  }\n}",
+        "options": {
+          "response": { "response": { "responseFormat": "file" } }
+        }
+      },
+      "id": "node_hf_fallback",
+      "name": "🤗 HuggingFace Fallback",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [2700, 220],
+      "notes": "SETUP: Free token at huggingface.co/settings/tokens. Returns binary image data directly. Used as fallback when Replicate fails or quota exceeded."
+    },
+
+    {
+      "parameters": {
+        "jsCode": "// Normalize image output from either Replicate or HuggingFace\nconst item = $input.first();\nconst json = item.json;\nconst binary = item.binary;\n\nlet imageUrl = null;\nlet imageBinary = null;\nlet source = 'unknown';\n\n// From Replicate (returns URL)\nif (json?.output && Array.isArray(json.output) && json.output[0]) {\n  imageUrl = json.output[0];\n  source = 'replicate';\n}\n// From HuggingFace (returns binary)\nelse if (binary?.data) {\n  imageBinary = binary.data;\n  source = 'huggingface';\n}\n\nreturn [{\n  json: {\n    filename: json.filename || `image_${Date.now()}`,\n    pack_name: json.pack_name,\n    product_id: json.product_id,\n    style: json.style,\n    image_url: imageUrl,\n    source: source,\n    generated_at: new Date().toISOString(),\n    original_prompt_data: json\n  },\n  binary: imageBinary ? { data: imageBinary } : undefined\n}];"
+      },
+      "id": "node_normalize_image",
+      "name": "⚙️ Normalize Image Output",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2960, 140],
+      "notes": "Normalizes output from both APIs into consistent format for the packager."
+    },
+
+    {
+      "parameters": {
+        "model": "llama3",
+        "messages": {
+          "values": [
+            {
+              "role": "system",
+              "content": "You are an expert ebook author and digital product creator. You write complete, high-quality, ready-to-sell ebooks and guides. Write in a clear, engaging, professional style. Respond in valid JSON only."
+            },
+            {
+              "role": "user",
+              "content": "=Write a COMPLETE ebook/guide for this digital product:\n\nProduct: {{$json.Product_Name}}\nKeyword: {{$json.Target_Keyword}}\nDescription: {{$json.Description}}\nPrice Range: ${{$json.Price_Min}} - ${{$json.Price_Max}}\n\nCreate a fully written ebook. Respond ONLY with this JSON:\n{\n  \"title\": \"Full ebook title\",\n  \"subtitle\": \"Compelling subtitle\",\n  \"author\": \"Digital Insights Team\",\n  \"tagline\": \"One-line value proposition\",\n  \"cover_color\": \"#hex primary brand color\",\n  \"accent_color\": \"#hex accent color\",\n  \"total_pages_estimate\": 25,\n  \"chapters\": [\n    {\n      \"number\": 1,\n      \"title\": \"Chapter Title\",\n      \"content\": \"FULL chapter text here - minimum 300 words per chapter. Write completely, not placeholders.\",\n      \"key_takeaways\": [\"takeaway 1\", \"takeaway 2\", \"takeaway 3\"]\n    }\n  ],\n  \"introduction\": \"Full introduction text - minimum 200 words\",\n  \"conclusion\": \"Full conclusion text - minimum 150 words\",\n  \"about_page\": \"About the author/brand text\",\n  \"table_of_contents\": [\"Chapter 1: Title\", \"Chapter 2: Title\"],\n  \"cover_prompt\": \"Stable Diffusion prompt for ebook cover image\",\n  \"back_cover_text\": \"Back cover blurb\"\n}"
+            }
+          ]
+        },
+        "options": { "temperature": 0.75 }
+      },
+      "id": "node_llama_ebook",
+      "name": "🧠 llama3 — Write Full eBook",
+      "type": "n8n-nodes-base.ollama",
+      "typeVersion": 1,
+      "position": [1420, 380],
+      "notes": "llama3 writes the COMPLETE ebook content — all chapters, intro, conclusion. This may take 3-5 minutes on CPU VPS. Increase timeout in n8n settings to 600s."
+    },
+
+    {
+      "parameters": {
+        "jsCode": "// Parse ebook content from llama3\nconst raw = $input.first().json;\nconst product = $('🔀 Route by Product Type').item.json;\n\nlet ebook;\ntry {\n  const content = raw?.message?.content || raw?.response || '';\n  const match = content.match(/```json\\n?([\\s\\S]*?)\\n?```/) || content.match(/({[\\s\\S]*})/);\n  ebook = JSON.parse((match ? match[1] || match[0] : content).trim());\n} catch(e) {\n  ebook = { error: true, raw: raw?.message?.content?.substring(0, 200) };\n}\n\nebook._product = product;\nebook._type = 'ebook';\nebook._created_at = new Date().toISOString();\nreturn [{ json: ebook }];"
+      },
+      "id": "node_parse_ebook",
+      "name": "⚙️ Parse eBook Content",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1680, 380]
+    },
+
+    {
+      "parameters": {
+        "jsCode": "// Build a complete, styled HTML ebook from the parsed content\nconst ebook = $input.first().json;\n\nconst coverColor = ebook.cover_color || '#2D3748';\nconst accentColor = ebook.accent_color || '#4299E1';\nconst title = ebook.title || 'Digital Guide';\nconst subtitle = ebook.subtitle || '';\nconst author = ebook.author || 'Digital Insights';\n\n// Build chapters HTML\nconst chaptersHtml = (ebook.chapters || []).map(ch => `\n  <div class=\"chapter\" id=\"chapter-${ch.number}\">\n    <div class=\"chapter-header\">\n      <span class=\"chapter-number\">Chapter ${ch.number}</span>\n      <h2>${ch.title}</h2>\n    </div>\n    <div class=\"chapter-content\">\n      ${ch.content.split('\\n').filter(p => p.trim()).map(p => `<p>${p}</p>`).join('')}\n    </div>\n    ${ch.key_takeaways && ch.key_takeaways.length ? `\n    <div class=\"takeaways\">\n      <h4>Key Takeaways</h4>\n      <ul>${ch.key_takeaways.map(t => `<li>${t}</li>`).join('')}</ul>\n    </div>` : ''}\n  </div>\n`).join('');\n\n// Table of contents\nconst tocHtml = (ebook.table_of_contents || []).map((item, i) =>\n  `<li><a href=\"#chapter-${i+1}\">${item}</a></li>`\n).join('');\n\nconst html = `<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n  <meta charset=\"UTF-8\">\n  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n  <title>${title}</title>\n  <style>\n    @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;700&family=Open+Sans:wght@300;400;600&display=swap');\n    * { margin: 0; padding: 0; box-sizing: border-box; }\n    body { font-family: 'Open Sans', sans-serif; color: #2D3748; background: #fff; }\n    .cover-page {\n      background: linear-gradient(135deg, ${coverColor} 0%, ${accentColor} 100%);\n      min-height: 100vh; display: flex; flex-direction: column;\n      align-items: center; justify-content: center;\n      text-align: center; padding: 60px 40px;\n      page-break-after: always;\n    }\n    .cover-page h1 { font-family: 'Playfair Display', serif; font-size: 3em; color: #fff; margin-bottom: 20px; line-height: 1.2; }\n    .cover-page .subtitle { font-size: 1.3em; color: rgba(255,255,255,0.85); margin-bottom: 30px; font-weight: 300; }\n    .cover-page .tagline { font-size: 1em; color: rgba(255,255,255,0.7); font-style: italic; }\n    .cover-page .author { margin-top: 60px; color: rgba(255,255,255,0.9); font-size: 1.1em; }\n    .toc-page { padding: 80px 60px; page-break-after: always; }\n    .toc-page h2 { font-family: 'Playfair Display', serif; font-size: 2em; color: ${coverColor}; margin-bottom: 30px; border-bottom: 3px solid ${accentColor}; padding-bottom: 10px; }\n    .toc-page ol { list-style: none; counter-reset: toc-counter; }\n    .toc-page ol li { counter-increment: toc-counter; padding: 12px 0; border-bottom: 1px solid #eee; font-size: 1.05em; }\n    .toc-page ol li a { text-decoration: none; color: #2D3748; }\n    .intro-page, .conclusion-page { padding: 80px 60px; page-break-after: always; }\n    .intro-page h2, .conclusion-page h2 { font-family: 'Playfair Display', serif; font-size: 2em; color: ${coverColor}; margin-bottom: 30px; }\n    .intro-page p, .conclusion-page p { font-size: 1.05em; line-height: 1.8; margin-bottom: 16px; color: #4A5568; }\n    .chapter { padding: 80px 60px; page-break-after: always; }\n    .chapter-header { margin-bottom: 40px; }\n    .chapter-number { font-size: 0.85em; color: ${accentColor}; font-weight: 600; text-transform: uppercase; letter-spacing: 3px; }\n    .chapter h2 { font-family: 'Playfair Display', serif; font-size: 2.2em; color: ${coverColor}; margin-top: 10px; line-height: 1.3; }\n    .chapter-content p { font-size: 1.05em; line-height: 1.9; margin-bottom: 18px; color: #4A5568; }\n    .takeaways { background: linear-gradient(135deg, ${coverColor}11, ${accentColor}22); border-left: 4px solid ${accentColor}; padding: 25px 30px; margin-top: 40px; border-radius: 0 8px 8px 0; }\n    .takeaways h4 { color: ${coverColor}; font-size: 1.1em; margin-bottom: 15px; font-weight: 600; }\n    .takeaways ul li { padding: 6px 0; color: #4A5568; font-size: 0.95em; }\n    .about-page { background: #F7FAFC; padding: 80px 60px; text-align: center; }\n    .about-page h3 { font-family: 'Playfair Display', serif; font-size: 1.8em; color: ${coverColor}; margin-bottom: 20px; }\n    .about-page p { font-size: 1em; line-height: 1.8; color: #718096; max-width: 500px; margin: 0 auto; }\n    .back-cover { background: linear-gradient(135deg, ${coverColor} 0%, ${accentColor} 100%); min-height: 60vh; display: flex; align-items: center; justify-content: center; padding: 60px; text-align: center; }\n    .back-cover p { color: rgba(255,255,255,0.9); font-size: 1.2em; line-height: 1.8; max-width: 500px; font-style: italic; }\n    @media print { * { -webkit-print-color-adjust: exact; print-color-adjust: exact; } }\n  </style>\n</head>\n<body>\n  <div class=\"cover-page\">\n    <h1>${title}</h1>\n    <div class=\"subtitle\">${subtitle}</div>\n    <div class=\"tagline\">${ebook.tagline || ''}</div>\n    <div class=\"author\">By ${author}</div>\n  </div>\n  <div class=\"toc-page\">\n    <h2>Table of Contents</h2>\n    <ol>${tocHtml}</ol>\n  </div>\n  <div class=\"intro-page\">\n    <h2>Introduction</h2>\n    ${(ebook.introduction || '').split('\\n').filter(p=>p.trim()).map(p=>`<p>${p}</p>`).join('')}\n  </div>\n  ${chaptersHtml}\n  <div class=\"conclusion-page\">\n    <h2>Conclusion</h2>\n    ${(ebook.conclusion || '').split('\\n').filter(p=>p.trim()).map(p=>`<p>${p}</p>`).join('')}\n  </div>\n  <div class=\"about-page\">\n    <h3>About the Author</h3>\n    <p>${ebook.about_page || ''}</p>\n  </div>\n  <div class=\"back-cover\">\n    <p>${ebook.back_cover_text || ''}</p>\n  </div>\n</body>\n</html>`;\n\nreturn [{ json: { ...ebook, html_content: html, _ready_for_pdf: true } }];"
+      },
+      "id": "node_build_ebook_html",
+      "name": "🖥️ Build Styled eBook HTML",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1940, 380],
+      "notes": "Builds a beautiful, fully-styled HTML ebook with cover page, TOC, chapters, callout boxes, and back cover. Ready for PDF conversion."
+    },
+
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.freepik.com/v1/ai/text-to-image",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "x-freepik-api-key", "value": "YOUR_FREEPIK_API_KEY" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "body": "={\n  \"prompt\": \"{{ $json.cover_prompt }}, professional ebook cover design, high resolution\",\n  \"negative_prompt\": \"text, watermark, blurry, low quality\",\n  \"guidance_scale\": 7,\n  \"num_images\": 1,\n  \"image\": { \"size\": \"portrait_4_3\" },\n  \"styling\": {\n    \"style\": \"photo\",\n    \"color\": \"vibrant\"\n  }\n}",
+        "options": {}
+      },
+      "id": "node_freepik_cover",
+      "name": "🎨 Freepik — Generate eBook Cover",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [2200, 380],
+      "notes": "SETUP: Get API key at freepik.com/api. Free tier: 100 AI image generations/day. Generates the ebook cover image."
+    },
+
+    {
+      "parameters": {
+        "jsCode": "// Build HTML→PDF via wkhtmltopdf shell command\n// wkhtmltopdf must be installed on VPS: apt-get install wkhtmltopdf\n// Alternative: use puppeteer or an HTML-to-PDF API\n\nconst ebook = $input.first().json;\nconst productId = ebook._product?.Product_Name?.toLowerCase().replace(/\\s+/g,'_') || `ebook_${Date.now()}`;\n\n// Write HTML to temp file path for wkhtmltopdf\nconst htmlPath = `/tmp/${productId}.html`;\nconst pdfPath = `/tmp/${productId}.pdf`;\n\n// The HTML content\nconst htmlContent = ebook.html_content || '<html><body><h1>Error: No content</h1></body></html>';\n\nreturn [{\n  json: {\n    ...ebook,\n    html_path: htmlPath,\n    pdf_path: pdfPath,\n    product_id: productId,\n    html_content: htmlContent,\n    _stage: 'ready_for_pdf_conversion'\n  }\n}];"
+      },
+      "id": "node_prep_pdf",
+      "name": "⚙️ Prep PDF Conversion Paths",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2460, 380]
+    },
+
+    {
+      "parameters": {
+        "command": "=# Write HTML file\ncat > {{ $json.html_path }} << 'HTMLEOF'\n{{ $json.html_content.substring(0, 50000) }}\nHHTMLEOF\n\n# Convert to PDF using wkhtmltopdf\nwkhtmltopdf \\\n  --page-size A4 \\\n  --margin-top 0 \\\n  --margin-right 0 \\\n  --margin-bottom 0 \\\n  --margin-left 0 \\\n  --enable-local-file-access \\\n  --print-media-type \\\n  {{ $json.html_path }} {{ $json.pdf_path }} 2>&1\n\n# Verify PDF was created\nif [ -f \"{{ $json.pdf_path }}\" ]; then\n  echo \"SUCCESS: {{ $json.pdf_path }}\"\n  ls -lh {{ $json.pdf_path }}\nelse\n  echo \"FAILED: PDF not created\"\nfi"
+      },
+      "id": "node_convert_pdf",
+      "name": "💻 Convert HTML → PDF (wkhtmltopdf)",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [2700, 380],
+      "notes": "SETUP REQUIRED: Install on VPS with: sudo apt-get install -y wkhtmltopdf xvfb. Runs wkhtmltopdf to convert styled HTML to PDF. For headless server, may need: xvfb-run wkhtmltopdf"
+    },
+
+    {
+      "parameters": {
+        "model": "llama3",
+        "messages": {
+          "values": [
+            {
+              "role": "system",
+              "content": "You are an expert at creating beautiful printable templates. You design templates using HTML and CSS that can be printed as high-quality PDFs. Always respond in valid JSON only."
+            },
+            {
+              "role": "user",
+              "content": "=Create a complete, ready-to-print template for:\n\nProduct: {{$json.Product_Name}}\nKeyword: {{$json.Target_Keyword}}\nDescription: {{$json.Description}}\n\nCreate MULTIPLE template variants (at least 3 designs). Respond ONLY with this JSON:\n{\n  \"template_name\": \"name\",\n  \"description\": \"what this template is for\",\n  \"variants\": [\n    {\n      \"name\": \"Minimal Clean\",\n      \"color_scheme\": \"#primary #secondary #accent\",\n      \"html\": \"COMPLETE HTML with embedded CSS for one full printable page. Must be self-contained, beautiful, and print-ready. Use real content, not placeholders where possible.\"\n    }\n  ],\n  \"sizes\": [\"A4\", \"US Letter\", \"Instagram Square\"],\n  \"usage_instructions\": \"How to use this template\",\n  \"cover_prompt\": \"SD prompt for mockup image\"\n}"
+            }
+          ]
+        },
+        "options": { "temperature": 0.8 }
+      },
+      "id": "node_llama_printable",
+      "name": "🧠 llama3 — Design Printable Template",
+      "type": "n8n-nodes-base.ollama",
+      "typeVersion": 1,
+      "position": [1420, 660],
+      "notes": "llama3 designs complete printable templates with embedded HTML/CSS. Multiple variants per product."
+    },
+
+    {
+      "parameters": {
+        "jsCode": "// Parse printable template data and prepare multiple PDF jobs\nconst raw = $input.first().json;\nconst product = $('🔀 Route by Product Type').item.json;\n\nlet templateData;\ntry {\n  const content = raw?.message?.content || raw?.response || '';\n  const match = content.match(/```json\\n?([\\s\\S]*?)\\n?```/) || content.match(/({[\\s\\S]*})/);\n  templateData = JSON.parse((match ? match[1] || match[0] : content).trim());\n} catch(e) {\n  templateData = { variants: [], error: e.message };\n}\n\n// Return each variant as separate item\nconst productId = product.Product_Name?.toLowerCase().replace(/\\s+/g,'_') || `template_${Date.now()}`;\nconst items = (templateData.variants || []).map((v, i) => ({\n  json: {\n    ...v,\n    template_name: templateData.template_name,\n    variant_index: i + 1,\n    product_id: productId,\n    html_path: `/tmp/${productId}_variant_${i+1}.html`,\n    pdf_path: `/tmp/${productId}_variant_${i+1}.pdf`,\n    cover_prompt: templateData.cover_prompt,\n    usage_instructions: templateData.usage_instructions,\n    _product: product,\n    _type: 'printable'\n  }\n}));\n\nreturn items.length ? items : [{ json: { error: 'No variants', product } }];"
+      },
+      "id": "node_parse_printable",
+      "name": "⚙️ Parse Printable Variants",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1680, 660]
+    },
+
+    {
+      "parameters": {
+        "command": "=cat > {{ $json.html_path }} << 'HTMLEOF'\n{{ $json.html }}\nHHTMLEOF\n\nwkhtmltopdf \\\n  --page-size A4 \\\n  --margin-top 0 --margin-right 0 --margin-bottom 0 --margin-left 0 \\\n  --enable-local-file-access \\\n  {{ $json.html_path }} {{ $json.pdf_path }} 2>&1\n\n[ -f \"{{ $json.pdf_path }}\" ] && echo \"SUCCESS\" || echo \"FAILED\""
+      },
+      "id": "node_printable_to_pdf",
+      "name": "💻 Convert Templates → PDFs",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [1940, 660],
+      "notes": "Converts each template variant to PDF. Runs in parallel for all variants."
+    },
+
+    {
+      "parameters": {
+        "model": "llama3",
+        "messages": {
+          "values": [
+            {
+              "role": "system",
+              "content": "You are an expert Notion template designer. You create complete, functional Notion page structures with properties, databases, and content. Always respond in valid JSON only."
+            },
+            {
+              "role": "user",
+              "content": "=Create a complete Notion template structure for:\n\nProduct: {{$json.Product_Name}}\nKeyword: {{$json.Target_Keyword}}\nDescription: {{$json.Description}}\n\nRespond ONLY with this JSON:\n{\n  \"template_title\": \"Page title\",\n  \"icon\": \"emoji\",\n  \"cover_color\": \"default_blue\",\n  \"description\": \"template description\",\n  \"page_content\": [\n    {\n      \"type\": \"heading_1\",\n      \"text\": \"Section Title\"\n    },\n    {\n      \"type\": \"paragraph\",\n      \"text\": \"Content paragraph text\"\n    },\n    {\n      \"type\": \"bulleted_list_item\",\n      \"text\": \"List item\"\n    },\n    {\n      \"type\": \"callout\",\n      \"text\": \"Important note or tip\",\n      \"icon\": \"💡\"\n    },\n    {\n      \"type\": \"divider\"\n    }\n  ],\n  \"databases\": [\n    {\n      \"name\": \"Database name\",\n      \"properties\": [\n        { \"name\": \"Name\", \"type\": \"title\" },\n        { \"name\": \"Status\", \"type\": \"select\", \"options\": [\"Todo\", \"In Progress\", \"Done\"] },\n        { \"name\": \"Date\", \"type\": \"date\" },\n        { \"name\": \"Notes\", \"type\": \"rich_text\" }\n      ]\n    }\n  ],\n  \"usage_guide\": \"How to use this template\",\n  \"duplicate_instructions\": \"Step by step to duplicate in Notion\"\n}"
+            }
+          ]
+        },
+        "options": { "temperature": 0.75 }
+      },
+      "id": "node_llama_notion",
+      "name": "🧠 llama3 — Design Notion Template",
+      "type": "n8n-nodes-base.ollama",
+      "typeVersion": 1,
+      "position": [1420, 940],
+      "notes": "llama3 designs the complete Notion template structure including databases and content blocks."
+    },
+
+    {
+      "parameters": {
+        "jsCode": "// Parse Notion template and prepare Notion API calls\nconst raw = $input.first().json;\nconst product = $('🔀 Route by Product Type').item.json;\n\nlet notionData;\ntry {\n  const content = raw?.message?.content || raw?.response || '';\n  const match = content.match(/```json\\n?([\\s\\S]*?)\\n?```/) || content.match(/({[\\s\\S]*})/);\n  notionData = JSON.parse((match ? match[1] || match[0] : content).trim());\n} catch(e) {\n  notionData = { error: e.message, page_content: [] };\n}\n\n// Convert llama3 content to Notion API block format\nconst blocks = (notionData.page_content || []).map(item => {\n  if (item.type === 'heading_1') return { object:'block', type:'heading_1', heading_1:{ rich_text:[{type:'text',text:{content:item.text}}] }};\n  if (item.type === 'heading_2') return { object:'block', type:'heading_2', heading_2:{ rich_text:[{type:'text',text:{content:item.text}}] }};\n  if (item.type === 'paragraph') return { object:'block', type:'paragraph', paragraph:{ rich_text:[{type:'text',text:{content:item.text}}] }};\n  if (item.type === 'bulleted_list_item') return { object:'block', type:'bulleted_list_item', bulleted_list_item:{ rich_text:[{type:'text',text:{content:item.text}}] }};\n  if (item.type === 'callout') return { object:'block', type:'callout', callout:{ rich_text:[{type:'text',text:{content:item.text}}], icon:{type:'emoji',emoji:item.icon||'💡'} }};\n  if (item.type === 'divider') return { object:'block', type:'divider', divider:{} };\n  return { object:'block', type:'paragraph', paragraph:{ rich_text:[{type:'text',text:{content:item.text||''}}] }};\n}).filter(Boolean);\n\nreturn [{\n  json: {\n    ...notionData,\n    notion_blocks: blocks,\n    product_id: product.Product_Name?.toLowerCase().replace(/\\s+/g,'_'),\n    _product: product,\n    _type: 'notion'\n  }\n}];"
+      },
+      "id": "node_parse_notion",
+      "name": "⚙️ Parse Notion Structure",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1680, 940]
+    },
+
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.notion.com/v1/pages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "Bearer YOUR_NOTION_INTEGRATION_TOKEN" },
+            { "name": "Notion-Version", "value": "2022-06-28" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "body": "={\n  \"parent\": { \"page_id\": \"YOUR_NOTION_PARENT_PAGE_ID\" },\n  \"icon\": { \"type\": \"emoji\", \"emoji\": \"{{ $json.icon || '📋' }}\" },\n  \"properties\": {\n    \"title\": {\n      \"title\": [{ \"type\": \"text\", \"text\": { \"content\": \"{{ $json.template_title }}\" } }]\n    }\n  },\n  \"children\": {{ JSON.stringify($json.notion_blocks.slice(0, 100)) }}\n}",
+        "options": {}
+      },
+      "id": "node_notion_create",
+      "name": "📓 Create Notion Template Page",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1940, 940],
+      "notes": "SETUP: Create Notion integration at notion.so/my-integrations. Share a parent page with the integration. Replace YOUR_NOTION_INTEGRATION_TOKEN and YOUR_NOTION_PARENT_PAGE_ID."
+    },
+
+    {
+      "parameters": {
+        "jsCode": "// Collect all product files from all pipelines and prepare for packaging\n// This node receives outputs from all 4 pipelines merged\n\nconst items = $input.all();\nconst products = [];\n\nfor (const item of items) {\n  const data = item.json;\n  if (!data) continue;\n\n  const type = data._type || data.original_product?._type || 'unknown';\n  const productId = data.product_id || `product_${Date.now()}`;\n\n  products.push({\n    product_id: productId,\n    type: type,\n    files: data.pdf_path ? [data.pdf_path] : [],\n    image_url: data.image_url || null,\n    notion_url: data.url ? `https://notion.so/${data.id?.replace(/-/g,'')}` : null,\n    metadata: {\n      title: data.title || data.pack_name || data.template_name || productId,\n      price: data.suggested_price || null,\n      cover_prompt: data.cover_prompt || null\n    },\n    raw: data\n  });\n}\n\nreturn [{ json: { products_to_package: products, count: products.length, packaged_at: new Date().toISOString() } }];"
+      },
+      "id": "node_collect_all",
+      "name": "🔀 Collect All Product Files",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3200, 400],
+      "notes": "Merge point — collects finished files from all 4 pipelines for packaging."
+    },
+
+    {
+      "parameters": {
+        "command": "=PRODUCT_ID=\"{{ $json.products_to_package[0].product_id }}\"\nZIP_DIR=\"/tmp/${PRODUCT_ID}_package\"\nZIP_FILE=\"/tmp/${PRODUCT_ID}_FINAL.zip\"\n\nmkdir -p \"$ZIP_DIR\"\nmkdir -p \"$ZIP_DIR/product_files\"\nmkdir -p \"$ZIP_DIR/bonus\"\n\n# Copy all PDFs and files into package\nfor FILE in /tmp/${PRODUCT_ID}*.pdf /tmp/${PRODUCT_ID}*.png /tmp/${PRODUCT_ID}*.jpg; do\n  [ -f \"$FILE\" ] && cp \"$FILE\" \"$ZIP_DIR/product_files/\" && echo \"Added: $FILE\"\ndone\n\n# Create README\ncat > \"$ZIP_DIR/README.txt\" << 'EOF'\nThank you for your purchase!\n\nHOW TO USE YOUR DIGITAL PRODUCT:\n1. Open the PDF files in any PDF viewer\n2. Print or use digitally\n3. Personal and commercial use included\n\nFor questions: support@yourstore.com\nEOF\n\n# Create ZIP\ncd /tmp && zip -r \"$ZIP_FILE\" \"${PRODUCT_ID}_package/\" 2>&1\n\n# Report\nif [ -f \"$ZIP_FILE\" ]; then\n  SIZE=$(ls -lh \"$ZIP_FILE\" | awk '{print $5}')\n  echo \"SUCCESS|$ZIP_FILE|$SIZE\"\nelse\n  echo \"FAILED|no zip created\"\nfi"
+      },
+      "id": "node_zip_package",
+      "name": "📦 Create ZIP Package",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [3460, 400],
+      "notes": "Creates a professional ZIP package with all product files + README. Requires zip installed on VPS: apt-get install zip"
+    },
+
+    {
+      "parameters": {
+        "jsCode": "// Parse zip result and prepare for Google Drive upload\nconst zipOutput = $input.first().json?.stdout || '';\nconst packageData = $('🔀 Collect All Product Files').first().json;\n\nconst lines = zipOutput.split('\\n');\nconst resultLine = lines.find(l => l.startsWith('SUCCESS|') || l.startsWith('FAILED|'));\n\nlet zipPath = null;\nlet zipSize = null;\nlet success = false;\n\nif (resultLine && resultLine.startsWith('SUCCESS|')) {\n  const parts = resultLine.split('|');\n  zipPath = parts[1];\n  zipSize = parts[2];\n  success = true;\n}\n\nconst productId = packageData.products_to_package?.[0]?.product_id || `product_${Date.now()}`;\n\nreturn [{\n  json: {\n    zip_success: success,\n    zip_path: zipPath,\n    zip_size: zipSize,\n    product_id: productId,\n    drive_filename: `${productId}_digital_product.zip`,\n    package_data: packageData,\n    _stage: 'ready_for_drive_upload'\n  }\n}];"
+      },
+      "id": "node_parse_zip",
+      "name": "⚙️ Parse ZIP Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3700, 400]
+    },
+
+    {
+      "parameters": {
+        "operation": "upload",
+        "name": "={{ $json.drive_filename }}",
+        "folderId": "YOUR_GOOGLE_DRIVE_FOLDER_ID",
+        "binaryData": false,
+        "fileContent": "={{ $binary?.data }}",
+        "options": {
+          "convert": false
+        }
+      },
+      "id": "node_drive_upload",
+      "name": "☁️ Upload ZIP to Google Drive",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [3960, 400],
+      "notes": "SETUP: Use same Google OAuth as Sheets. Replace YOUR_GOOGLE_DRIVE_FOLDER_ID — right-click folder in Drive → Get link → extract ID from URL. Creates a shareable download link for storefronts."
+    },
+
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://www.googleapis.com/drive/v3/files/={{ $json.id }}/permissions",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "Bearer {{ $credentials.googleApi.accessToken }}" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "body": "={ \"role\": \"reader\", \"type\": \"anyone\" }",
+        "options": {}
+      },
+      "id": "node_drive_share",
+      "name": "🔗 Make Drive File Public",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [4220, 400],
+      "notes": "Makes the uploaded ZIP file publicly accessible so storefronts can link to it."
+    },
+
+    {
+      "parameters": {
+        "jsCode": "// Build final product record with all URLs and metadata\nconst driveFile = $('☁️ Upload ZIP to Google Drive').first().json;\nconst zipData = $('⚙️ Parse ZIP Result').first().json;\nconst packageData = zipData.package_data;\nconst productMeta = packageData?.products_to_package?.[0]?.metadata || {};\n\nconst fileId = driveFile?.id;\nconst driveUrl = fileId ? `https://drive.google.com/file/d/${fileId}/view` : null;\nconst downloadUrl = fileId ? `https://drive.google.com/uc?export=download&id=${fileId}` : null;\n\nconst finalProduct = {\n  product_id: zipData.product_id,\n  title: productMeta.title || zipData.product_id,\n  price: productMeta.price || 9.99,\n  zip_path: zipData.zip_path,\n  zip_size: zipData.zip_size,\n  drive_file_id: fileId,\n  drive_url: driveUrl,\n  download_url: downloadUrl,\n  created_at: new Date().toISOString(),\n  status: 'CREATION_COMPLETE',\n  ready_to_publish: true,\n  _package: packageData\n};\n\nreturn [{ json: finalProduct }];"
+      },
+      "id": "node_final_record",
+      "name": "⚙️ Build Final Product Record",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [4480, 400],
+      "notes": "Assembles the complete product record with Google Drive URL for publishing."
+    },
+
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": { "value": "YOUR_GOOGLE_SHEET_ID_HERE" },
+        "sheetName": { "value": "Products_Ready" },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Product_ID": "={{ $json.product_id }}",
+            "Title": "={{ $json.title }}",
+            "Price": "={{ $json.price }}",
+            "Drive_URL": "={{ $json.drive_url }}",
+            "Download_URL": "={{ $json.download_url }}",
+            "ZIP_Size": "={{ $json.zip_size }}",
+            "Status": "Ready to Publish",
+            "Created_At": "={{ $json.created_at }}",
+            "Published_Etsy": "NO",
+            "Published_Gumroad": "NO",
+            "Published_Payhip": "NO",
+            "Published_Social": "NO"
+          }
+        },
+        "options": {}
+      },
+      "id": "node_write_products_ready",
+      "name": "📊 Write to Products_Ready Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [4740, 400],
+      "notes": "Writes the complete product with Drive URL to Products_Ready. This triggers Workflow 3 on next cycle."
+    },
+
+    {
+      "parameters": {
+        "operation": "update",
+        "documentId": { "value": "YOUR_GOOGLE_SHEET_ID_HERE" },
+        "sheetName": { "value": "Research_Opportunities" },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": { "Status": "Creation Complete - Ready to Publish" }
+        },
+        "where": {
+          "values": [{ "lookupColumn": "Product_Name", "lookupValue": "={{ $json.title }}" }]
+        },
+        "options": {}
+      },
+      "id": "node_update_research",
+      "name": "📊 Update Research Sheet Status",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [5000, 400],
+      "notes": "Marks the original research row as complete so it won't be reprocessed."
+    }
+
+  ],
+  "connections": {
+    "⏰ Poll for Approved Products (Every 6h)": { "main": [[{ "node": "📊 Read Approved Products", "type": "main", "index": 0 }]] },
+    "📊 Read Approved Products": { "main": [[{ "node": "🔀 Any Approved?", "type": "main", "index": 0 }]] },
+    "🔀 Any Approved?": { "main": [[{ "node": "⚙️ Detect Product Type", "type": "main", "index": 0 }]] },
+    "⚙️ Detect Product Type": { "main": [[{ "node": "🔀 Route by Product Type", "type": "main", "index": 0 }]] },
+    "🔀 Route by Product Type": {
+      "main": [
+        [{ "node": "🧠 phi3 — Generate Art Prompts", "type": "main", "index": 0 }],
+        [{ "node": "🧠 llama3 — Write Full eBook", "type": "main", "index": 0 }],
+        [{ "node": "🧠 llama3 — Design Printable Template", "type": "main", "index": 0 }],
+        [{ "node": "🧠 llama3 — Design Notion Template", "type": "main", "index": 0 }]
+      ]
+    },
+    "🧠 phi3 — Generate Art Prompts": { "main": [[{ "node": "⚙️ Parse & Split Art Prompts", "type": "main", "index": 0 }]] },
+    "⚙️ Parse & Split Art Prompts": { "main": [[{ "node": "🎨 Replicate — Generate Image", "type": "main", "index": 0 }]] },
+    "🎨 Replicate — Generate Image": { "main": [[{ "node": "⏳ Wait 30s for Replicate", "type": "main", "index": 0 }]] },
+    "⏳ Wait 30s for Replicate": { "main": [[{ "node": "🔍 Poll Replicate Result", "type": "main", "index": 0 }]] },
+    "🔍 Poll Replicate Result": { "main": [[{ "node": "🔀 Replicate Done?", "type": "main", "index": 0 }]] },
+    "🔀 Replicate Done?": {
+      "main": [
+        [{ "node": "⚙️ Normalize Image Output", "type": "main", "index": 0 }],
+        [{ "node": "🤗 HuggingFace Fallback", "type": "main", "index": 0 }]
+      ]
+    },
+    "🤗 HuggingFace Fallback": { "main": [[{ "node": "⚙️ Normalize Image Output", "type": "main", "index": 1 }]] },
+    "⚙️ Normalize Image Output": { "main": [[{ "node": "🔀 Collect All Product Files", "type": "main", "index": 0 }]] },
+    "🧠 llama3 — Write Full eBook": { "main": [[{ "node": "⚙️ Parse eBook Content", "type": "main", "index": 0 }]] },
+    "⚙️ Parse eBook Content": { "main": [[{ "node": "🖥️ Build Styled eBook HTML", "type": "main", "index": 0 }]] },
+    "🖥️ Build Styled eBook HTML": { "main": [[{ "node": "🎨 Freepik — Generate eBook Cover", "type": "main", "index": 0 }]] },
+    "🎨 Freepik — Generate eBook Cover": { "main": [[{ "node": "⚙️ Prep PDF Conversion Paths", "type": "main", "index": 0 }]] },
+    "⚙️ Prep PDF Conversion Paths": { "main": [[{ "node": "💻 Convert HTML → PDF (wkhtmltopdf)", "type": "main", "index": 0 }]] },
+    "💻 Convert HTML → PDF (wkhtmltopdf)": { "main": [[{ "node": "🔀 Collect All Product Files", "type": "main", "index": 1 }]] },
+    "🧠 llama3 — Design Printable Template": { "main": [[{ "node": "⚙️ Parse Printable Variants", "type": "main", "index": 0 }]] },
+    "⚙️ Parse Printable Variants": { "main": [[{ "node": "💻 Convert Templates → PDFs", "type": "main", "index": 0 }]] },
+    "💻 Convert Templates → PDFs": { "main": [[{ "node": "🔀 Collect All Product Files", "type": "main", "index": 2 }]] },
+    "🧠 llama3 — Design Notion Template": { "main": [[{ "node": "⚙️ Parse Notion Structure", "type": "main", "index": 0 }]] },
+    "⚙️ Parse Notion Structure": { "main": [[{ "node": "📓 Create Notion Template Page", "type": "main", "index": 0 }]] },
+    "📓 Create Notion Template Page": { "main": [[{ "node": "🔀 Collect All Product Files", "type": "main", "index": 3 }]] },
+    "🔀 Collect All Product Files": { "main": [[{ "node": "📦 Create ZIP Package", "type": "main", "index": 0 }]] },
+    "📦 Create ZIP Package": { "main": [[{ "node": "⚙️ Parse ZIP Result", "type": "main", "index": 0 }]] },
+    "⚙️ Parse ZIP Result": { "main": [[{ "node": "☁️ Upload ZIP to Google Drive", "type": "main", "index": 0 }]] },
+    "☁️ Upload ZIP to Google Drive": { "main": [[{ "node": "🔗 Make Drive File Public", "type": "main", "index": 0 }]] },
+    "🔗 Make Drive File Public": { "main": [[{ "node": "⚙️ Build Final Product Record", "type": "main", "index": 0 }]] },
+    "⚙️ Build Final Product Record": { "main": [[{ "node": "📊 Write to Products_Ready Sheet", "type": "main", "index": 0 }]] },
+    "📊 Write to Products_Ready Sheet": { "main": [[{ "node": "📊 Update Research Sheet Status", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1", "saveManualExecutions": true, "executionTimeout": 3600 },
+  "meta": {
+    "description": "Phase 2B: Fully automated product creation factory. Routes by type: AI Art (phi3 prompts → Replicate → HuggingFace fallback), eBooks (llama3 writes → HTML → PDF), Printables (llama3 designs → HTML → PDF), Notion templates (llama3 → Notion API). Packages into ZIP, uploads to Google Drive, writes to Products_Ready sheet."
+  }
+}

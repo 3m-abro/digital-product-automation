@@ -1,0 +1,308 @@
+{
+  "name": "09C — Blog Publisher (WordPress + SEO + Pinterest)",
+  "nodes": [
+
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "publish-blog",
+        "responseMode": "onReceived",
+        "responseData": "allEntries"
+      },
+      "id": "node_webhook",
+      "name": "🔔 Webhook — Receive Blog to Publish",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1.1,
+      "position": [200, 400],
+      "notes": "Called by 09A after content is generated. Receives full blog post object + Pinterest pins + brand data."
+    },
+
+    {
+      "parameters": {
+        "jsCode": "const body = $input.first().json.body || $input.first().json;\nconst blog = body.blog || {};\nconst pins = body.pinterest_pins || [];\nconst storeUrls = body.store_urls || {};\nconst brand = body.brand || {};\nconst productId = body.product_id;\n\n// Validate blog data\nif (!blog.post?.title || !blog.post?.introduction) {\n  return [{ json: { error: true, message: 'Blog data missing required fields', received: Object.keys(blog) } }];\n}\n\n// Build complete WordPress-ready post content\nconst buildWordPressContent = (post, seo, productUrl) => {\n  const sections = (post.sections || []).map(section => {\n    const subsections = (section.subsections || []).map(sub =>\n      `<h3>${sub.subheading}</h3>\\n<p>${sub.content}</p>`\n    ).join('\\n');\n    \n    const list = section.has_list && section.list_items?.length ?\n      `<ul>${section.list_items.map(item => `<li>${item}</li>`).join('')}</ul>` : '';\n    \n    return `<h2>${section.heading}</h2>\\n<p>${section.content}</p>\\n${subsections}\\n${list}`;\n  }).join('\\n\\n');\n\n  const faqs = (post.faq_section?.faqs || []).map(faq =>\n    `<details><summary><strong>${faq.question}</strong></summary><p>${faq.answer}</p></details>`\n  ).join('\\n');\n\n  const content = `\n<!-- wp:paragraph -->\n<p>${post.introduction}</p>\n<!-- /wp:paragraph -->\n\n${sections}\n\n<!-- wp:heading -->\n<h2>${post.product_section?.heading || 'Get the Template'}</h2>\n<!-- /wp:heading -->\n\n<!-- wp:paragraph -->\n<p>${post.product_section?.content || ''}</p>\n<!-- /wp:paragraph -->\n\n<!-- wp:buttons -->\n<div class=\"wp-block-buttons\">\n  <div class=\"wp-block-button\">\n    <a class=\"wp-block-button__link\" href=\"${productUrl}\">${post.product_section?.cta_button_text || 'Get It Now'}</a>\n  </div>\n</div>\n<!-- /wp:buttons -->\n\n<!-- wp:heading -->\n<h2>${post.faq_section?.heading || 'Frequently Asked Questions'}</h2>\n<!-- /wp:heading -->\n\n${faqs}\n\n<!-- wp:paragraph -->\n<p>${post.conclusion}</p>\n<!-- /wp:paragraph -->\n\n<!-- wp:separator -->\n<hr class=\"wp-block-separator\"/>\n<!-- /wp:separator -->\n\n<!-- wp:paragraph -->\n<p><em>${post.author_bio}</em></p>\n<!-- /wp:paragraph -->\n  `;\n\n  return content.trim();\n};\n\nconst wpContent = buildWordPressContent(blog.post, blog.seo, storeUrls.primary);\n\n// Build Yoast/RankMath SEO schema\nconst seoMeta = {\n  title: blog.seo?.meta_title || blog.post?.title,\n  description: blog.seo?.meta_description || '',\n  focus_keyword: blog.seo?.primary_keyword || '',\n  slug: blog.seo?.url_slug || blog.post?.title?.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,''),\n  schema_type: blog.seo?.schema_type || 'Article'\n};\n\n// Build FAQ schema JSON-LD\nconst faqSchema = {\n  '@context': 'https://schema.org',\n  '@type': 'FAQPage',\n  'mainEntity': (blog.post?.faq_section?.faqs || []).map(faq => ({\n    '@type': 'Question',\n    'name': faq.question,\n    'acceptedAnswer': { '@type': 'Answer', 'text': faq.answer }\n  }))\n};\n\nreturn [{ json: {\n  product_id: productId,\n  brand,\n  store_urls: storeUrls,\n  wordpress: {\n    title: blog.post?.title,\n    content: wpContent,\n    slug: seoMeta.slug,\n    status: 'publish',\n    categories: [brand.brand_name || 'Digital Products'],\n    tags: blog.seo?.secondary_keywords || [],\n    meta: {\n      _yoast_wpseo_title: seoMeta.title,\n      _yoast_wpseo_metadesc: seoMeta.description,\n      _yoast_wpseo_focuskw: seoMeta.focus_keyword,\n      rank_math_focus_keyword: seoMeta.focus_keyword,\n      rank_math_description: seoMeta.description\n    },\n    faq_schema: JSON.stringify(faqSchema)\n  },\n  ghost: {\n    title: blog.post?.title,\n    html: wpContent.replace(/<!-- [^>]+ -->/g, ''),\n    slug: seoMeta.slug,\n    status: 'published',\n    tags: (blog.seo?.secondary_keywords || []).map(kw => ({ name: kw })),\n    meta_title: seoMeta.title,\n    meta_description: seoMeta.description\n  },\n  seo_meta: seoMeta,\n  pinterest_pins: pins,\n  featured_image_prompt: blog.pinterest_pins?.[0]?.sd_prompt || '',\n  full_blog: blog,\n  _prepared_at: new Date().toISOString()\n}}];"
+      },
+      "id": "node_prep_blog",
+      "name": "⚙️ Prep Blog for Publishing",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [460, 400],
+      "notes": "Converts llama3 blog output into WordPress Gutenberg block format and Ghost HTML format. Builds FAQ schema JSON-LD. Prepares Yoast/RankMath SEO meta fields."
+    },
+
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.replicate.com/v1/predictions",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "Token YOUR_REPLICATE_API_TOKEN" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "body": "={\n  \"version\": \"ac732df83cea7fff18b8472768c88ad041fa750ff7682a21affe81863cbe77e4\",\n  \"input\": {\n    \"prompt\": \"{{ $json.featured_image_prompt }}, blog featured image, professional, clean, wide format, 1200x628 pixels, no text\",\n    \"negative_prompt\": \"text, watermark, low quality, blurry\",\n    \"width\": 1200,\n    \"height\": 628,\n    \"num_inference_steps\": 28,\n    \"guidance_scale\": 7.5\n  }\n}",
+        "options": {}
+      },
+      "id": "node_gen_featured_img",
+      "name": "🎨 Generate Featured Image",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [720, 220],
+      "notes": "Generates the blog featured image at 1200x628 (Open Graph standard size). Also used as Pinterest pin image."
+    },
+
+    {
+      "parameters": {
+        "amount": 35,
+        "unit": "seconds"
+      },
+      "id": "node_wait_img",
+      "name": "⏳ Wait for Featured Image",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1,
+      "position": [980, 220]
+    },
+
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://api.replicate.com/v1/predictions/{{ $json.id }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [{ "name": "Authorization", "value": "Token YOUR_REPLICATE_API_TOKEN" }]
+        },
+        "options": {}
+      },
+      "id": "node_poll_img",
+      "name": "🔍 Poll Featured Image",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1240, 220]
+    },
+
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "YOUR_WORDPRESS_SITE_URL/wp-json/wp/v2/posts",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBasicAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "body": "={\n  \"title\": \"{{ $json.wordpress.title }}\",\n  \"content\": \"{{ $json.wordpress.content }}\",\n  \"slug\": \"{{ $json.wordpress.slug }}\",\n  \"status\": \"{{ $json.wordpress.status }}\",\n  \"meta\": {{ JSON.stringify($json.wordpress.meta) }},\n  \"tags\": []\n}",
+        "options": {}
+      },
+      "id": "node_wp_publish",
+      "name": "📝 Publish to WordPress",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [720, 460],
+      "notes": "SETUP: WordPress REST API. Authentication: HTTP Basic Auth with your WP username + Application Password (WP Admin → Users → Application Passwords). Replace YOUR_WORDPRESS_SITE_URL. Free WordPress hosting: wordpress.com, or self-hosted on your VPS."
+    },
+
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "YOUR_GHOST_SITE_URL/ghost/api/v3/admin/posts/",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "Ghost YOUR_GHOST_ADMIN_API_KEY" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "body": "={\n  \"posts\": [{\n    \"title\": \"{{ $json.ghost.title }}\",\n    \"html\": \"{{ $json.ghost.html }}\",\n    \"slug\": \"{{ $json.ghost.slug }}\",\n    \"status\": \"{{ $json.ghost.status }}\",\n    \"tags\": {{ JSON.stringify($json.ghost.tags) }},\n    \"meta_title\": \"{{ $json.ghost.meta_title }}\",\n    \"meta_description\": \"{{ $json.ghost.meta_description }}\"\n  }]\n}",
+        "options": {}
+      },
+      "id": "node_ghost_publish",
+      "name": "👻 Publish to Ghost (Alternative)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [720, 640],
+      "notes": "ALTERNATIVE to WordPress. Ghost is cleaner, faster, better SEO out of the box. Free self-hosted or $9/month Ghost Pro. Get Admin API key from Ghost Admin → Integrations → Add Custom Integration. Use EITHER WordPress OR Ghost, not both."
+    },
+
+    {
+      "parameters": {
+        "jsCode": "// Determine which CMS was used and get the published URL\nconst wpResult = $('📝 Publish to WordPress').first().json;\nconst ghostResult = $('👻 Publish to Ghost (Alternative)').first().json;\nconst prepData = $('⚙️ Prep Blog for Publishing').first().json;\nconst imgResult = $('🔍 Poll Featured Image').first().json;\n\n// Get blog URL from whichever platform succeeded\nlet blogUrl = null;\nlet platform = null;\nlet postId = null;\n\nif (wpResult?.link && !wpResult?.code) {\n  blogUrl = wpResult.link;\n  platform = 'wordpress';\n  postId = wpResult.id;\n} else if (ghostResult?.posts?.[0]?.url) {\n  blogUrl = ghostResult.posts[0].url;\n  platform = 'ghost';\n  postId = ghostResult.posts[0].id;\n} else {\n  // Fallback: construct URL from slug\n  blogUrl = `YOUR_BLOG_URL/${prepData.seo_meta.slug}`;\n  platform = 'unknown';\n}\n\nconst featuredImageUrl = imgResult?.output?.[0] || null;\n\n// Update Pinterest pins with actual blog URL\nconst pinsWithUrl = (prepData.pinterest_pins || []).map(pin => ({\n  ...pin,\n  link: blogUrl,\n  image_url: featuredImageUrl\n}));\n\nreturn [{ json: {\n  product_id: prepData.product_id,\n  blog_published: !!blogUrl,\n  blog_url: blogUrl,\n  blog_platform: platform,\n  post_id: postId,\n  featured_image_url: featuredImageUrl,\n  seo_meta: prepData.seo_meta,\n  pinterest_pins: pinsWithUrl,\n  store_urls: prepData.store_urls,\n  brand: prepData.brand,\n  _published_at: new Date().toISOString()\n}}];"
+      },
+      "id": "node_get_post_url",
+      "name": "⚙️ Get Published Blog URL",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1020, 540],
+      "notes": "Extracts the live blog post URL from whichever CMS responded. Updates Pinterest pins with the real URL."
+    },
+
+    {
+      "parameters": {
+        "jsCode": "// Split Pinterest pins into separate items for parallel posting\nconst data = $input.first().json;\nconst pins = data.pinterest_pins || [];\n\nif (pins.length === 0) {\n  return [{ json: { ...data, no_pins: true } }];\n}\n\nreturn pins.map(pin => ({ json: { ...data, current_pin: pin } }));"
+      },
+      "id": "node_split_pins",
+      "name": "⚙️ Split Pinterest Pins",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1280, 400],
+      "notes": "Splits 3 Pinterest pins into separate workflow items for parallel posting."
+    },
+
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.pinterest.com/v5/pins",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "Bearer YOUR_CLEARSTACK_PINTEREST_TOKEN" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "body": "={\n  \"link\": \"{{ $json.current_pin.link }}\",\n  \"title\": \"{{ $json.current_pin.title }}\",\n  \"description\": \"{{ $json.current_pin.description }}\",\n  \"board_id\": \"YOUR_CLEARSTACK_PRODUCTIVITY_BOARD_ID\",\n  \"media_source\": {\n    \"source_type\": \"image_url\",\n    \"url\": \"{{ $json.current_pin.image_url || $json.featured_image_url }}\"\n  }\n}",
+        "options": {}
+      },
+      "id": "node_pinterest_post",
+      "name": "📌 Post Pin to Pinterest",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1540, 400],
+      "notes": "Posts each pin to Pinterest. Each pin links to the blog post — this is the Pinterest → Blog → Store funnel. 3 pins per product = 3x chances to surface in Pinterest search."
+    },
+
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "YOUR_N8N_BASE_URL/webhook/humanize-and-engineer",
+        "sendBody": true,
+        "contentType": "json",
+        "body": "={\n  \"content_type\": \"listing\",\n  \"product_name\": \"{{ $json.wordpress?.title || $json.ghost?.title }}\",\n  \"product_category\": \"{{ $json.brand?.primary_genre || 'productivity' }}\",\n  \"raw_content\": \"{{ $json.seo_meta?.description }}\"\n}",
+        "options": {}
+      },
+      "id": "node_humanize_meta",
+      "name": "🔌 Humanize Meta Description",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1280, 640],
+      "notes": "Calls Workflow 05 to humanize the meta description. Good meta descriptions dramatically improve click-through rate from Google search results."
+    },
+
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "YOUR_WORDPRESS_SITE_URL/wp-json/wp/v2/posts/={{ $json.post_id }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBasicAuth",
+        "sendBody": true,
+        "contentType": "json",
+        "body": "={\n  \"meta\": {\n    \"_yoast_wpseo_metadesc\": \"{{ $('🔌 Humanize Meta Description').first().json.humanized_description_short || $json.seo_meta.description }}\"\n  }\n}",
+        "options": {}
+      },
+      "id": "node_update_meta",
+      "name": "📝 Update Meta with Humanized Version",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1540, 640],
+      "notes": "Updates the WordPress post with the humanized meta description. Improves CTR from search results."
+    },
+
+    {
+      "parameters": {
+        "jsCode": "// Generate Google Search Console submission and sitemap ping\nconst data = $('⚙️ Get Published Blog URL').first().json;\nconst wpResult = $('📝 Publish to WordPress').first().json;\nconst pinResults = $('📌 Post Pin to Pinterest').all().map(i => i.json);\n\nconst pinsPosted = pinResults.filter(r => r.id).length;\n\nreturn [{ json: {\n  product_id: data.product_id,\n  \n  // Blog results\n  blog_url: data.blog_url,\n  blog_platform: data.blog_platform,\n  blog_post_id: data.post_id,\n  featured_image: data.featured_image_url,\n  \n  // SEO\n  primary_keyword: data.seo_meta?.focus_keyword,\n  meta_title: data.seo_meta?.title,\n  meta_description: data.seo_meta?.description,\n  \n  // Pinterest\n  pins_posted: pinsPosted,\n  pinterest_board: 'Productivity Board',\n  \n  // Indexing actions needed\n  indexing_actions: [\n    `Submit URL to Google Search Console: ${data.blog_url}`,\n    `Ping sitemap: ${data.blog_url?.split('/').slice(0,3).join('/')}/sitemap.xml`,\n    `Share on all social platforms with blog URL`,\n    `Add internal links from other blog posts to this one`\n  ],\n  \n  // Performance tracking\n  tracking_setup: {\n    google_analytics_event: `blog_published_${data.product_id}`,\n    target_keyword: data.seo_meta?.primary_keyword,\n    ranking_timeline: data.full_blog?.estimated_ranking_timeline || '3-6 months',\n    check_ranking_after_days: 30\n  },\n  \n  _completed_at: new Date().toISOString()\n}}];"
+      },
+      "id": "node_build_report",
+      "name": "⚙️ Build Publishing Report",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1800, 500]
+    },
+
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": { "value": "YOUR_GOOGLE_SHEET_ID_HERE" },
+        "sheetName": { "value": "Blog_Library" },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Product_ID": "={{ $json.product_id }}",
+            "Blog_URL": "={{ $json.blog_url }}",
+            "Platform": "={{ $json.blog_platform }}",
+            "Post_ID": "={{ $json.blog_post_id }}",
+            "Primary_Keyword": "={{ $json.primary_keyword }}",
+            "Meta_Title": "={{ $json.meta_title }}",
+            "Featured_Image": "={{ $json.featured_image }}",
+            "Pinterest_Pins_Posted": "={{ $json.pins_posted }}",
+            "Ranking_Timeline": "={{ $json.tracking_setup.ranking_timeline }}",
+            "Check_Rankings_After": "={{ $json.tracking_setup.check_ranking_after_days }} days",
+            "Status": "Published",
+            "Published_At": "={{ $json._completed_at }}",
+            "Google_Search_Console": "SUBMIT MANUALLY",
+            "Current_Ranking": "",
+            "Monthly_Traffic": ""
+          }
+        },
+        "options": {}
+      },
+      "id": "node_log_blog",
+      "name": "📊 Log to Blog_Library Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [2060, 500],
+      "notes": "Logs every published blog post. Track rankings and traffic over time in this sheet."
+    },
+
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=YOUR_WORDPRESS_SITE_URL/wp-json/seo-by-rank-math/v1/getHead?url={{ $json.blog_url }}",
+        "options": {}
+      },
+      "id": "node_ping_sitemap",
+      "name": "🔍 Ping Sitemap (RankMath)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [2060, 700],
+      "notes": "Pings RankMath SEO plugin to regenerate sitemap after new post. Also triggers auto-submission to Google if configured. Optional node — only needed with RankMath plugin."
+    }
+
+  ],
+  "connections": {
+    "🔔 Webhook — Receive Blog to Publish": { "main": [[{ "node": "⚙️ Prep Blog for Publishing", "type": "main", "index": 0 }]] },
+    "⚙️ Prep Blog for Publishing": {
+      "main": [[
+        { "node": "🎨 Generate Featured Image", "type": "main", "index": 0 },
+        { "node": "📝 Publish to WordPress", "type": "main", "index": 0 },
+        { "node": "👻 Publish to Ghost (Alternative)", "type": "main", "index": 0 }
+      ]]
+    },
+    "🎨 Generate Featured Image": { "main": [[{ "node": "⏳ Wait for Featured Image", "type": "main", "index": 0 }]] },
+    "⏳ Wait for Featured Image": { "main": [[{ "node": "🔍 Poll Featured Image", "type": "main", "index": 0 }]] },
+    "🔍 Poll Featured Image": { "main": [[{ "node": "⚙️ Get Published Blog URL", "type": "main", "index": 0 }]] },
+    "📝 Publish to WordPress": { "main": [[{ "node": "⚙️ Get Published Blog URL", "type": "main", "index": 0 }]] },
+    "👻 Publish to Ghost (Alternative)": { "main": [[{ "node": "⚙️ Get Published Blog URL", "type": "main", "index": 0 }]] },
+    "⚙️ Get Published Blog URL": {
+      "main": [[
+        { "node": "⚙️ Split Pinterest Pins", "type": "main", "index": 0 },
+        { "node": "🔌 Humanize Meta Description", "type": "main", "index": 0 }
+      ]]
+    },
+    "⚙️ Split Pinterest Pins": { "main": [[{ "node": "📌 Post Pin to Pinterest", "type": "main", "index": 0 }]] },
+    "📌 Post Pin to Pinterest": { "main": [[{ "node": "⚙️ Build Publishing Report", "type": "main", "index": 0 }]] },
+    "🔌 Humanize Meta Description": { "main": [[{ "node": "📝 Update Meta with Humanized Version", "type": "main", "index": 0 }]] },
+    "📝 Update Meta with Humanized Version": { "main": [[{ "node": "⚙️ Build Publishing Report", "type": "main", "index": 0 }]] },
+    "⚙️ Build Publishing Report": { "main": [[{ "node": "📊 Log to Blog_Library Sheet", "type": "main", "index": 0 }]] },
+    "📊 Log to Blog_Library Sheet": { "main": [[{ "node": "🔍 Ping Sitemap (RankMath)", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1", "saveManualExecutions": true, "executionTimeout": 600 },
+  "meta": { "description": "Workflow 09C: Blog Publisher. Converts llama3 blog content to WordPress Gutenberg blocks or Ghost HTML. Generates AI featured image (1200x628). Publishes post with full Yoast/RankMath SEO meta. Posts 3 Pinterest pins linking to blog. Humanizes meta description. Logs everything to Blog_Library sheet." }
+}

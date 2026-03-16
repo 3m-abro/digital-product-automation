@@ -1,0 +1,294 @@
+{
+  "name": "04 — Social Media Promotion Agent (FB + IG + TikTok + Pinterest + YouTube)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "social-promotion-trigger",
+        "responseMode": "onReceived",
+        "responseData": "allEntries"
+      },
+      "id": "node_webhook_trigger",
+      "name": "🔔 Webhook — Receive from Publishing Agent",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1.1,
+      "position": [200, 400],
+      "webhookId": "social-promotion-trigger",
+      "notes": "This webhook receives the product data from Workflow 3. Copy this URL and paste into Workflow 3's trigger step."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse incoming product data and enrich with store links\nconst incoming = $input.first().json;\nconst body = incoming.body || incoming;\n\n// Build post URLs - combine best performing store URL\nconst primaryUrl = body.gumroad_url || body.etsy_url || body.payhip_url || 'https://gumroad.com';\n\n// Inject the real product URL into captions\nconst enrichedSocial = {\n  product_title: body.youtube_title || 'New Digital Product',\n  \n  // Inject URLs into captions\n  instagram_caption: (body.ig_caption || '') + `\\n\\n🔗 Link in bio | Shop: ${primaryUrl}`,\n  facebook_post: (body.fb_post || '') + `\\n\\n👇 Get it here: ${primaryUrl}`,\n  tiktok_script: body.tiktok_script || '',\n  pinterest_description: (body.pinterest_description || '') + ` Shop now: ${primaryUrl}`,\n  youtube_title: body.youtube_title || 'Check out this digital product!',\n  youtube_description: `${body.youtube_title}\\n\\n🔗 Get it here: ${primaryUrl}\\n\\n#digitalproducts #passiveincome #etsy`,\n  \n  // Store links\n  gumroad_url: body.gumroad_url || '',\n  etsy_url: body.etsy_url || '',\n  payhip_url: body.payhip_url || '',\n  primary_url: primaryUrl,\n  \n  timestamp: new Date().toISOString()\n};\n\nreturn [{ json: enrichedSocial }];"
+      },
+      "id": "node_enrich_social",
+      "name": "⚙️ Enrich Social Content with URLs",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [460, 400],
+      "notes": "Injects real product URLs into all social media captions before posting."
+    },
+
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://graph.facebook.com/v18.0/YOUR_PAGE_ID/feed",
+        "sendBody": true,
+        "contentType": "form-urlencoded",
+        "bodyParameters": {
+          "parameters": [
+            { "name": "message", "value": "={{ $json.facebook_post }}" },
+            { "name": "link", "value": "={{ $json.primary_url }}" },
+            { "name": "access_token", "value": "YOUR_FACEBOOK_PAGE_ACCESS_TOKEN" }
+          ]
+        },
+        "options": {}
+      },
+      "id": "node_post_facebook",
+      "name": "📘 Post to Facebook Page",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [740, 100],
+      "notes": "SETUP REQUIRED: (1) Create Facebook App at developers.facebook.com (2) Get Page Access Token with pages_manage_posts permission (3) Replace YOUR_PAGE_ID and YOUR_FACEBOOK_PAGE_ACCESS_TOKEN"
+    },
+
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://graph.facebook.com/v18.0/YOUR_IG_USER_ID/media",
+        "sendBody": true,
+        "contentType": "form-urlencoded",
+        "bodyParameters": {
+          "parameters": [
+            { "name": "image_url", "value": "YOUR_PRODUCT_IMAGE_URL" },
+            { "name": "caption", "value": "={{ $json.instagram_caption }}" },
+            { "name": "access_token", "value": "YOUR_INSTAGRAM_ACCESS_TOKEN" }
+          ]
+        },
+        "options": {}
+      },
+      "id": "node_ig_create_container",
+      "name": "📸 Instagram — Create Media Container",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [740, 260],
+      "notes": "SETUP REQUIRED: Instagram Content Publishing API. Uses same Meta App as Facebook. Replace YOUR_IG_USER_ID and YOUR_INSTAGRAM_ACCESS_TOKEN. image_url must be a publicly accessible URL of your product image."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://graph.facebook.com/v18.0/YOUR_IG_USER_ID/media_publish",
+        "sendBody": true,
+        "contentType": "form-urlencoded",
+        "bodyParameters": {
+          "parameters": [
+            { "name": "creation_id", "value": "={{ $json.id }}" },
+            { "name": "access_token", "value": "YOUR_INSTAGRAM_ACCESS_TOKEN" }
+          ]
+        },
+        "options": {}
+      },
+      "id": "node_ig_publish",
+      "name": "📸 Instagram — Publish Post",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1000, 260],
+      "notes": "Second step of Instagram publishing. Uses the container ID from previous step to publish the post."
+    },
+
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://open.tiktokapis.com/v2/post/publish/video/init/",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "Bearer YOUR_TIKTOK_ACCESS_TOKEN" },
+            { "name": "Content-Type", "value": "application/json; charset=UTF-8" }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "body": "={\n  \"post_info\": {\n    \"title\": \"{{ $json.product_title.substring(0, 100) }}\",\n    \"description\": \"{{ $json.tiktok_script.substring(0, 2200) }}\",\n    \"disable_duet\": false,\n    \"disable_comment\": false,\n    \"disable_stitch\": false,\n    \"privacy_level\": \"PUBLIC_TO_EVERYONE\"\n  },\n  \"source_info\": {\n    \"source\": \"PULL_FROM_URL\",\n    \"video_url\": \"YOUR_VIDEO_URL_HERE\",\n    \"chunk_size\": 10000000\n  }\n}",
+        "options": {}
+      },
+      "id": "node_tiktok_post",
+      "name": "🎵 Post to TikTok",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [740, 420],
+      "notes": "SETUP REQUIRED: Apply for TikTok Content Posting API at developers.tiktok.com. NOTE: TikTok API requires a video file URL. For automation, pre-generate a short video using CapCut (free) or use a static image video tool. Replace YOUR_TIKTOK_ACCESS_TOKEN and YOUR_VIDEO_URL_HERE."
+    },
+
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.pinterest.com/v5/pins",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "Bearer YOUR_PINTEREST_ACCESS_TOKEN" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "body": "={\n  \"board_id\": \"YOUR_PINTEREST_BOARD_ID\",\n  \"title\": \"{{ $json.product_title }}\",\n  \"description\": \"{{ $json.pinterest_description }}\",\n  \"link\": \"{{ $json.primary_url }}\",\n  \"media_source\": {\n    \"source_type\": \"image_url\",\n    \"url\": \"YOUR_PRODUCT_IMAGE_URL\"\n  }\n}",
+        "options": {}
+      },
+      "id": "node_pinterest_post",
+      "name": "📌 Post to Pinterest",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [740, 580],
+      "notes": "SETUP REQUIRED: Create Pinterest App at developers.pinterest.com. Get access token with pins:write scope. Replace YOUR_PINTEREST_ACCESS_TOKEN, YOUR_PINTEREST_BOARD_ID, and YOUR_PRODUCT_IMAGE_URL."
+    },
+
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://www.googleapis.com/upload/youtube/v3/videos?uploadType=resumable&part=snippet,status",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "Bearer YOUR_YOUTUBE_OAUTH_TOKEN" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "body": "={\n  \"snippet\": {\n    \"title\": \"{{ $json.youtube_title }}\",\n    \"description\": \"{{ $json.youtube_description }}\",\n    \"tags\": [\"digital products\", \"passive income\", \"etsy\", \"digital download\"],\n    \"categoryId\": \"22\",\n    \"defaultLanguage\": \"en\"\n  },\n  \"status\": {\n    \"privacyStatus\": \"public\",\n    \"selfDeclaredMadeForKids\": false\n  }\n}",
+        "options": {}
+      },
+      "id": "node_youtube_post",
+      "name": "▶️ Schedule YouTube Short",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [740, 740],
+      "notes": "SETUP REQUIRED: YouTube Data API v3. OAuth2 with youtube.upload scope. NOTE: This initiates the upload metadata. You need a pre-created Shorts video file URL. Use Google Cloud Console to set up OAuth credentials."
+    },
+
+    {
+      "parameters": {
+        "jsCode": "// Collect all social media results\nconst social = $('⚙️ Enrich Social Content with URLs').first().json;\n\nconst fbResult = $('📘 Post to Facebook Page').first().json;\nconst igResult = $('📸 Instagram — Publish Post').first().json;\nconst ttResult = $('🎵 Post to TikTok').first().json;\nconst pinResult = $('📌 Post to Pinterest').first().json;\nconst ytResult = $('▶️ Schedule YouTube Short').first().json;\n\nconst report = {\n  product_title: social.product_title,\n  posted_at: new Date().toISOString(),\n  \n  results: {\n    facebook: {\n      success: !!fbResult?.id,\n      post_id: fbResult?.id || null\n    },\n    instagram: {\n      success: !!igResult?.id,\n      post_id: igResult?.id || null\n    },\n    tiktok: {\n      success: ttResult?.data?.publish_id ? true : false,\n      publish_id: ttResult?.data?.publish_id || null\n    },\n    pinterest: {\n      success: !!pinResult?.id,\n      pin_id: pinResult?.id || null,\n      pin_url: pinResult?.id ? `https://www.pinterest.com/pin/${pinResult.id}` : null\n    },\n    youtube: {\n      success: !!ytResult,\n      note: 'Check YouTube Studio for upload status'\n    }\n  },\n  \n  summary: `Social posting complete for: ${social.product_title}`,\n  primary_url: social.primary_url\n};\n\nreturn [{ json: report }];"
+      },
+      "id": "node_collect_social",
+      "name": "📊 Collect Social Results",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1240, 420],
+      "notes": "Aggregates results from all social platform APIs."
+    },
+
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "value": "YOUR_GOOGLE_SHEET_ID_HERE"
+        },
+        "sheetName": {
+          "value": "Social_Posts_Log"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Product_Title": "={{ $json.product_title }}",
+            "Posted_At": "={{ $json.posted_at }}",
+            "Facebook_Success": "={{ $json.results.facebook.success }}",
+            "Facebook_Post_ID": "={{ $json.results.facebook.post_id }}",
+            "Instagram_Success": "={{ $json.results.instagram.success }}",
+            "Instagram_Post_ID": "={{ $json.results.instagram.post_id }}",
+            "TikTok_Success": "={{ $json.results.tiktok.success }}",
+            "Pinterest_Success": "={{ $json.results.pinterest.success }}",
+            "Pinterest_URL": "={{ $json.results.pinterest.pin_url }}",
+            "YouTube_Queued": "={{ $json.results.youtube.success }}",
+            "Product_URL": "={{ $json.primary_url }}"
+          }
+        },
+        "options": {}
+      },
+      "id": "node_log_social",
+      "name": "📊 Log Social Posts to Sheets",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [1500, 420],
+      "notes": "Logs all social post results to the Social_Posts_Log tab for tracking and analytics."
+    },
+
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "value": "YOUR_GOOGLE_SHEET_ID_HERE"
+        },
+        "sheetName": {
+          "value": "Weekly_Dashboard"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Week": "={{ new Date().toLocaleDateString('en-US', {year:'numeric', month:'long', day:'numeric'}) }}",
+            "Product": "={{ $json.product_title }}",
+            "Action": "Social Promotion Complete",
+            "Platforms": "Facebook, Instagram, TikTok, Pinterest, YouTube",
+            "Timestamp": "={{ $json.posted_at }}",
+            "Status": "✅ Complete"
+          }
+        },
+        "options": {}
+      },
+      "id": "node_dashboard_update",
+      "name": "📊 Update Weekly Dashboard",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [1760, 420],
+      "notes": "Updates the master Weekly_Dashboard tab so you have a one-stop view of everything that happened."
+    }
+  ],
+  "connections": {
+    "🔔 Webhook — Receive from Publishing Agent": {
+      "main": [[{ "node": "⚙️ Enrich Social Content with URLs", "type": "main", "index": 0 }]]
+    },
+    "⚙️ Enrich Social Content with URLs": {
+      "main": [
+        [
+          { "node": "📘 Post to Facebook Page", "type": "main", "index": 0 },
+          { "node": "📸 Instagram — Create Media Container", "type": "main", "index": 0 },
+          { "node": "🎵 Post to TikTok", "type": "main", "index": 0 },
+          { "node": "📌 Post to Pinterest", "type": "main", "index": 0 },
+          { "node": "▶️ Schedule YouTube Short", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "📸 Instagram — Create Media Container": {
+      "main": [[{ "node": "📸 Instagram — Publish Post", "type": "main", "index": 0 }]]
+    },
+    "📘 Post to Facebook Page": {
+      "main": [[{ "node": "📊 Collect Social Results", "type": "main", "index": 0 }]]
+    },
+    "📸 Instagram — Publish Post": {
+      "main": [[{ "node": "📊 Collect Social Results", "type": "main", "index": 1 }]]
+    },
+    "🎵 Post to TikTok": {
+      "main": [[{ "node": "📊 Collect Social Results", "type": "main", "index": 2 }]]
+    },
+    "📌 Post to Pinterest": {
+      "main": [[{ "node": "📊 Collect Social Results", "type": "main", "index": 3 }]]
+    },
+    "▶️ Schedule YouTube Short": {
+      "main": [[{ "node": "📊 Collect Social Results", "type": "main", "index": 4 }]]
+    },
+    "📊 Collect Social Results": {
+      "main": [[{ "node": "📊 Log Social Posts to Sheets", "type": "main", "index": 0 }]]
+    },
+    "📊 Log Social Posts to Sheets": {
+      "main": [[{ "node": "📊 Update Weekly Dashboard", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true
+  },
+  "meta": {
+    "description": "Phase 4: Social media promotion agent. Triggered by webhook from Workflow 3. Posts simultaneously to Facebook, Instagram (2-step), TikTok, Pinterest, and YouTube Shorts. Logs all results to Google Sheets."
+  }
+}

@@ -1,0 +1,220 @@
+{
+  "name": "11B — Brevo Automation Builder",
+  "nodes": [
+
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "brevo-create-sequence",
+        "responseMode": "lastNode",
+        "responseData": "allEntries"
+      },
+      "id": "node_webhook",
+      "name": "🔔 Webhook — Receive Sequence from WF11A",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1.1,
+      "position": [200, 400]
+    },
+
+    {
+      "parameters": {
+        "jsCode": "const body = $input.first().json.body || $input.first().json;\nconst sequenceType = body.sequence_type;\n\n// Map sequence types to Brevo list IDs and automation templates\n// You create these lists once in Brevo dashboard, then fill IDs here\nconst listMap = {\n  welcome:       { list_id: 'YOUR_BREVO_WELCOME_LIST_ID',    tag: 'welcome-sequence' },\n  post_purchase: { list_id: 'YOUR_BREVO_BUYERS_LIST_ID',     tag: 'buyer' },\n  lead_magnet:   { list_id: 'YOUR_BREVO_LEADS_LIST_ID',      tag: 'lead-magnet' },\n  newsletter:    { list_id: 'YOUR_BREVO_NEWSLETTER_LIST_ID', tag: 'newsletter' }\n};\n\nconst listConfig = listMap[sequenceType] || listMap.welcome;\n\nreturn [{ json: {\n  ...body,\n  brevo_list_id: listConfig.list_id,\n  brevo_tag: listConfig.tag,\n  api_key: 'YOUR_BREVO_API_KEY',\n  _ready: true\n}}];"
+      },
+      "id": "node_prep",
+      "name": "⚙️ Map Sequence to Brevo List",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [460, 400],
+      "notes": "SETUP: (1) Create account at brevo.com — free. (2) Contacts → Lists → Create 4 lists: Welcome, Buyers, Leads, Newsletter. (3) Copy each list ID (shown in URL when editing). (4) API Keys → Generate key → replace YOUR_BREVO_API_KEY."
+    },
+
+    {
+      "parameters": {
+        "conditions": {
+          "conditions": [{ "leftValue": "={{ $json.send_immediately }}", "rightValue": true, "operator": { "type": "boolean", "operation": "true" } }]
+        }
+      },
+      "id": "node_route_send",
+      "name": "🔀 Send Now or Create Automation?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [720, 400],
+      "notes": "Newsletter = send immediately. All sequences = create Brevo automation (triggered by list addition)."
+    },
+
+    {
+      "parameters": {
+        "jsCode": "// For newsletters: send as a campaign immediately\nconst data = $input.first().json;\nconst emails = data.emails || [];\nconst email = emails[0] || data;\n\nreturn [{ json: {\n  ...data,\n  campaign_payload: {\n    name: `Newsletter — ${email.newsletter_date || new Date().toISOString().split('T')[0]}`,\n    subject: email.subject,\n    htmlContent: email.html_content,\n    textContent: email.text_content,\n    sender: { name: 'ClearStack Studio', email: 'hello@clearstackstudio.com' },\n    replyTo: 'hello@clearstackstudio.com',\n    recipients: { listIds: [parseInt(data.brevo_list_id) || 1] },\n    header: email.preview_text || ''\n  }\n}}];"
+      },
+      "id": "node_build_campaign",
+      "name": "⚙️ Build Newsletter Campaign Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [980, 240]
+    },
+
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.brevo.com/v3/emailCampaigns",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "api-key", "value": "={{ $json.api_key }}" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "body": "={{ JSON.stringify($json.campaign_payload) }}",
+        "options": {}
+      },
+      "id": "node_create_campaign",
+      "name": "📧 Brevo — Create Newsletter Campaign",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1240, 240]
+    },
+
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.brevo.com/v3/emailCampaigns/{{ $json.id }}/sendNow",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [{ "name": "api-key", "value": "YOUR_BREVO_API_KEY" }]
+        },
+        "options": {}
+      },
+      "id": "node_send_campaign",
+      "name": "📤 Brevo — Send Newsletter Now",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1500, 240],
+      "notes": "Sends the newsletter campaign immediately. Brevo respects the 300/day free tier limit automatically."
+    },
+
+    {
+      "parameters": {
+        "jsCode": "// Build Brevo automation workflow for drip sequences\n// Each email in the sequence becomes a step in a Brevo automation\nconst data = $input.first().json;\nconst emails = data.emails || [];\n\n// Build steps array for Brevo automation API\nconst steps = emails.map((email, i) => ({\n  type: 'sendEmail',\n  delay: {\n    value: email.send_delay_days || 0,\n    unit: 'days'\n  },\n  email: {\n    subject: email.subject,\n    htmlContent: email.html_content,\n    textContent: email.text_content,\n    sender: { name: 'ClearStack Studio', email: 'hello@clearstackstudio.com' },\n    replyTo: 'hello@clearstackstudio.com'\n  }\n}));\n\n// Brevo automation trigger: contact added to specific list\nconst automationPayload = {\n  name: data.sequence_name || `${data.sequence_type} sequence`,\n  status: 'active',\n  trigger: {\n    type: 'contactAdded',\n    listId: parseInt(data.brevo_list_id) || 1\n  },\n  steps: steps\n};\n\nreturn [{ json: {\n  ...data,\n  automation_payload: automationPayload,\n  step_count: steps.length\n}}];"
+      },
+      "id": "node_build_automation",
+      "name": "⚙️ Build Brevo Automation Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [980, 560],
+      "notes": "Builds a Brevo automation workflow — triggers when a contact is added to the designated list, then sends each email with the configured delay."
+    },
+
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.brevo.com/v3/automations",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "api-key", "value": "={{ $json.api_key }}" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "body": "={{ JSON.stringify($json.automation_payload) }}",
+        "options": {}
+      },
+      "id": "node_create_automation",
+      "name": "⚙️ Brevo — Create Automation Workflow",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1240, 560],
+      "notes": "Creates the drip automation in Brevo. Once created, it runs automatically whenever a contact is added to the trigger list. Only needs to run ONCE per sequence type — subsequent triggers just add contacts to the list."
+    },
+
+    {
+      "parameters": {
+        "jsCode": "// After automation is created, check if we should also add a contact immediately\nconst automationResult = $input.first().json;\nconst originalData = $('⚙️ Map Sequence to Brevo List').first().json;\n\nreturn [{ json: {\n  automation_id: automationResult.id,\n  automation_name: automationResult.name,\n  sequence_type: originalData.sequence_type,\n  brevo_list_id: originalData.brevo_list_id,\n  api_key: originalData.api_key,\n  // If a contact email was passed (e.g. from post-purchase), add them now\n  contact_email: originalData.contact_email || null,\n  contact_name: originalData.contact_name || null,\n  product_name: originalData.product_name || null,\n  _automation_created: true\n}}];"
+      },
+      "id": "node_post_create",
+      "name": "⚙️ Post-Create: Check for Immediate Contact",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1500, 560]
+    },
+
+    {
+      "parameters": {
+        "conditions": {
+          "conditions": [{ "leftValue": "={{ $json.contact_email }}", "rightValue": "", "operator": { "type": "string", "operation": "notEquals" } }]
+        }
+      },
+      "id": "node_has_contact",
+      "name": "🔀 Add Contact Immediately?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1760, 560],
+      "notes": "If a specific contact email was included (post-purchase trigger from WF03), add them to the sequence list immediately so their drip starts now."
+    },
+
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.brevo.com/v3/contacts",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "api-key", "value": "={{ $json.api_key }}" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "body": "={\n  \"email\": \"{{ $json.contact_email }}\",\n  \"attributes\": {\n    \"FIRSTNAME\": \"{{ ($json.contact_name || '').split(' ')[0] }}\",\n    \"LASTNAME\": \"{{ ($json.contact_name || '').split(' ').slice(1).join(' ') }}\",\n    \"PRODUCT_PURCHASED\": \"{{ $json.product_name || '' }}\",\n    \"SOURCE\": \"{{ $json.sequence_type }}\"\n  },\n  \"listIds\": [{{ parseInt($json.brevo_list_id) || 1 }}],\n  \"updateEnabled\": true\n}",
+        "options": {}
+      },
+      "id": "node_add_contact",
+      "name": "👤 Brevo — Add Contact to Sequence",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [2020, 460],
+      "notes": "Adds a specific contact to the trigger list, which starts their drip sequence immediately. Called after purchases (from WF03) and after ManyChat email capture."
+    },
+
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\n  \"success\": true,\n  \"sequence_type\": \"{{ $('⚙️ Map Sequence to Brevo List').first().json.sequence_type }}\",\n  \"automation_id\": \"{{ $('⚙️ Post-Create: Check for Immediate Contact').first().json.automation_id || 'newsletter_sent' }}\",\n  \"message\": \"Email sequence created and active in Brevo\"\n}"
+      },
+      "id": "node_respond",
+      "name": "📤 Return Success",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [2280, 400]
+    }
+
+  ],
+  "connections": {
+    "🔔 Webhook — Receive Sequence from WF11A": { "main": [[{ "node": "⚙️ Map Sequence to Brevo List", "type": "main", "index": 0 }]] },
+    "⚙️ Map Sequence to Brevo List": { "main": [[{ "node": "🔀 Send Now or Create Automation?", "type": "main", "index": 0 }]] },
+    "🔀 Send Now or Create Automation?": {
+      "main": [
+        [{ "node": "⚙️ Build Brevo Automation Payload", "type": "main", "index": 0 }],
+        [{ "node": "⚙️ Build Newsletter Campaign Payload", "type": "main", "index": 0 }]
+      ]
+    },
+    "⚙️ Build Newsletter Campaign Payload": { "main": [[{ "node": "📧 Brevo — Create Newsletter Campaign", "type": "main", "index": 0 }]] },
+    "📧 Brevo — Create Newsletter Campaign": { "main": [[{ "node": "📤 Brevo — Send Newsletter Now", "type": "main", "index": 0 }]] },
+    "📤 Brevo — Send Newsletter Now": { "main": [[{ "node": "📤 Return Success", "type": "main", "index": 0 }]] },
+    "⚙️ Build Brevo Automation Payload": { "main": [[{ "node": "⚙️ Brevo — Create Automation Workflow", "type": "main", "index": 0 }]] },
+    "⚙️ Brevo — Create Automation Workflow": { "main": [[{ "node": "⚙️ Post-Create: Check for Immediate Contact", "type": "main", "index": 0 }]] },
+    "⚙️ Post-Create: Check for Immediate Contact": { "main": [[{ "node": "🔀 Add Contact Immediately?", "type": "main", "index": 0 }]] },
+    "🔀 Add Contact Immediately?": {
+      "main": [
+        [{ "node": "📤 Return Success", "type": "main", "index": 0 }],
+        [{ "node": "👤 Brevo — Add Contact to Sequence", "type": "main", "index": 0 }]
+      ]
+    },
+    "👤 Brevo — Add Contact to Sequence": { "main": [[{ "node": "📤 Return Success", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1", "saveManualExecutions": true, "executionTimeout": 120 },
+  "meta": { "description": "WF11B: Brevo Automation Builder. Creates drip sequences as Brevo automations (trigger: contact added to list). Newsletters sent immediately as campaigns. Adds specific contacts on post-purchase or ManyChat capture. Free tier covers 300 emails/day." }
+}

@@ -1,0 +1,512 @@
+{
+  "name": "09A — Content Engine (Blog + Carousel)",
+  "nodes": [
+
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "content-engine",
+        "responseMode": "lastNode",
+        "responseData": "allEntries"
+      },
+      "id": "node_webhook",
+      "name": "🔔 Webhook — Trigger Content Engine",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1.1,
+      "position": [200, 500],
+      "notes": "Called by Workflow 03 after product goes live. Receives: product_id, title, description, category, store_urls, product_images, brand_id, keywords."
+    },
+
+    {
+      "parameters": {
+        "jsCode": "const body = $input.first().json.body || $input.first().json;\nconst required = ['title', 'category', 'brand_id'];\nconst missing = required.filter(k => !body[k]);\nif (missing.length > 0) return [{ json: { error: true, message: `Missing: ${missing.join(', ')}` } }];\n\nreturn [{ json: {\n  product_id: body.product_id || `prod_${Date.now()}`,\n  title: body.title,\n  subtitle: body.subtitle || '',\n  description: body.description || '',\n  category: body.category,\n  brand_id: body.brand_id || 'clearstack',\n  keywords: body.keywords || [],\n  primary_keyword: (body.keywords || [])[0] || body.title,\n  price: body.price || 9.99,\n  store_urls: {\n    etsy: body.etsy_url || '',\n    gumroad: body.gumroad_url || '',\n    payhip: body.payhip_url || '',\n    kdp: body.kdp_url || ''\n  },\n  cover_image: (body.product_images || [])[0] || body.cover_image || '',\n  brand_name: 'ClearStack Studio',\n  brand_url: 'https://clearstackstudio.com',\n  brand_color_primary: '#1B2A4A',\n  brand_color_accent: '#C9A84C',\n  wp_domain: 'clearstackstudio.com',\n  _received_at: new Date().toISOString()\n}}];"
+      },
+      "id": "node_validate",
+      "name": "⚙️ Validate + Build Product Context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [460, 500]
+    },
+
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "YOUR_N8N_BASE_URL/webhook/get-brand-config",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [{ "name": "Content-Type", "value": "application/json" }] },
+        "sendBody": true,
+        "contentType": "json",
+        "body": "={ \"brand_id\": \"{{ $json.brand_id }}\", \"genre\": \"{{ $json.category }}\" }",
+        "options": { "timeout": 30000 }
+      },
+      "id": "node_get_brand",
+      "name": "🔌 Get Brand Config (WF06)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [720, 500]
+    },
+
+    {
+      "parameters": {
+        "jsCode": "const product = $('⚙️ Validate + Build Product Context').first().json;\nconst brand = $input.first().json.brand || {};\nreturn [{ json: {\n  ...product,\n  brand,\n  tone_description: brand.voice?.description || 'Professional, warm, practical.',\n  seo_keywords: [...product.keywords, ...(brand.seo?.etsy_primary_keywords || []).slice(0,5)]\n    .filter((v,i,a) => a.indexOf(v)===i).slice(0,15),\n  forbidden_phrases: brand.voice?.forbidden_phrases || [],\n  signature_phrases: brand.voice?.signature_phrases || [],\n  _enriched: true\n}}];"
+      },
+      "id": "node_enrich",
+      "name": "⚙️ Merge Brand + Product",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [980, 500]
+    },
+
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "YOUR_N8N_BASE_URL/webhook/halal-check",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [{ "name": "Content-Type", "value": "application/json" }] },
+        "sendBody": true,
+        "contentType": "json",
+        "body": "={\n  \"content\": \"{{ $json.title }} {{ $json.description }}\",\n  \"content_type\": \"blog_and_social\",\n  \"product_name\": \"{{ $json.title }}\",\n  \"brand_id\": \"{{ $json.brand_id }}\"\n}",
+        "options": { "timeout": 60000 }
+      },
+      "id": "node_halal_check",
+      "name": "🔌 Halal Check (WF07)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1240, 500]
+    },
+
+    {
+      "parameters": {
+        "conditions": {
+          "conditions": [{ "leftValue": "={{ $json.approved }}", "rightValue": false, "operator": { "type": "boolean", "operation": "true" } }]
+        }
+      },
+      "id": "node_halal_gate",
+      "name": "🔀 Halal Approved?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1500, 500]
+    },
+
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": { "value": "YOUR_GOOGLE_SHEET_ID_HERE" },
+        "sheetName": { "value": "Content_Blocked_Log" },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Timestamp": "={{ new Date().toISOString() }}",
+            "Product": "={{ $('⚙️ Validate + Build Product Context').first().json.title }}",
+            "Reason": "={{ $json.reason }}",
+            "Flags": "={{ ($json.flags || []).join(' | ') }}"
+          }
+        },
+        "options": {}
+      },
+      "id": "node_log_blocked",
+      "name": "📊 Log Blocked Content",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [1760, 340]
+    },
+
+    {
+      "parameters": {
+        "jsCode": "const product = $('⚙️ Merge Brand + Product').first().json;\nreturn [{ json: { ...product, halal_approved: true } }];"
+      },
+      "id": "node_pass",
+      "name": "⚙️ Pass Approved Product",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1760, 620]
+    },
+
+    {
+      "parameters": {
+        "model": "llama3",
+        "messages": {
+          "values": [
+            {
+              "role": "system",
+              "content": "You are an expert SEO content writer. You write long-form blog posts that rank on Google AND convert readers into buyers. You write in a natural, human voice — direct, specific, zero fluff. You understand on-page SEO: keyword placement, heading hierarchy, featured snippet optimization via FAQ sections, and internal linking strategy. Respond in valid JSON only."
+            },
+            {
+              "role": "user",
+              "content": "=Write a complete SEO blog post for this product:\n\nProduct: {{$json.title}}\nPrimary Keyword: {{$json.primary_keyword}}\nKeywords: {{$json.seo_keywords.join(', ')}}\nCategory: {{$json.category}}\nDescription: {{$json.description}}\nBrand Voice: {{$json.tone_description}}\nEtsy URL: {{$json.store_urls.etsy}}\nGumroad URL: {{$json.store_urls.gumroad}}\nPrice: ${{$json.price}}\nForbidden phrases: {{$json.forbidden_phrases.join(', ')}}\n\nRequirements:\n- 1800-2200 words total\n- H1 title contains primary keyword\n- 4-6 H2s with secondary keywords\n- Primary keyword appears 5-7 times naturally\n- First paragraph hooks AND contains primary keyword\n- 2 product CTAs linking to store (use STORE_URL placeholder)\n- FAQ section at end (3 Qs — targets featured snippets)\n- Real, specific examples — no generic advice\n- Conversational but authoritative\n\nRespond ONLY with this JSON:\n{\n  \"wordpress_data\": {\n    \"title\": \"SEO title — contains primary keyword\",\n    \"slug\": \"url-slug-with-keyword\",\n    \"meta_description\": \"155 char meta description with keyword\",\n    \"focus_keyword\": \"primary keyword\",\n    \"categories\": [\"Productivity\", \"Templates\"],\n    \"tags\": [\"tag1\",\"tag2\",\"tag3\",\"tag4\",\"tag5\"],\n    \"featured_image_alt\": \"descriptive alt text for product image\"\n  },\n  \"content_html\": \"FULL blog post HTML — use h2, h3, p, ul, li, strong, a href tags. 1800-2200 words. Include all sections. CTAs use STORE_URL placeholder.\",\n  \"excerpt\": \"2-3 sentence excerpt under 150 chars\",\n  \"pinterest_description\": \"Pinterest pin description — keyword rich, 400 chars max\",\n  \"estimated_read_time_minutes\": 8,\n  \"word_count\": 2000,\n  \"internal_links_needed\": [\n    { \"placeholder\": \"INTERNAL_LINK_TOPIC\", \"suggested_post\": \"future post title\" }\n  ]\n}"
+            }
+          ]
+        },
+        "options": { "temperature": 0.75 }
+      },
+      "id": "node_llama_blog",
+      "name": "🧠 llama3 — Write SEO Blog Post",
+      "type": "n8n-nodes-base.ollama",
+      "typeVersion": 1,
+      "position": [2020, 380],
+      "notes": "Writes complete 1800-2200 word SEO post. ~5-10 min on CPU VPS. Includes proper HTML structure, keyword placement, FAQ section for featured snippets, 2 product CTAs."
+    },
+
+    {
+      "parameters": {
+        "model": "mistral",
+        "messages": {
+          "values": [
+            {
+              "role": "system",
+              "content": "You are an expert social media carousel designer and conversion copywriter. You create scroll-stopping carousels that educate, build trust, and drive sales without feeling like ads. You know that great carousels tell a story across slides — each slide earns the swipe to the next. Respond in valid JSON only."
+            },
+            {
+              "role": "user",
+              "content": "=Create 3 carousel post scripts for this product:\n\nProduct: {{$json.title}}\nCategory: {{$json.category}}\nDescription: {{$json.description}}\nBrand: {{$json.brand_name}}\nTone: {{$json.tone_description}}\nPrimary Color: {{$json.brand_color_primary}}\nAccent Color: {{$json.brand_color_accent}}\nStore URL: {{$json.store_urls.etsy || $json.store_urls.gumroad}}\nPrice: ${{$json.price}}\n\nCreate exactly 3 carousels:\n1. EDUCATIONAL: \"5 ways to use [product]\"\n2. PROBLEM_SOLUTION: specific pain → this product solves it\n3. BEFORE_AFTER: chaotic situation → organized with product\n\nEach carousel = 6-8 slides. Respond ONLY with this JSON:\n{\n  \"carousels\": [\n    {\n      \"type\": \"educational\",\n      \"hook_text\": \"scroll-stopping first slide headline\",\n      \"platform_caption\": {\n        \"instagram\": \"IG caption with emojis — 150 words max + hashtags\",\n        \"facebook\": \"FB post — story driven, 200 words max\",\n        \"pinterest\": \"Pinterest description — keyword rich, 400 chars\"\n      },\n      \"slides\": [\n        {\n          \"slide_number\": 1,\n          \"slide_type\": \"hook\",\n          \"headline\": \"Max 8 words — the hook\",\n          \"body_text\": \"Supporting text — max 20 words\",\n          \"emoji\": \"✨\",\n          \"background_style\": \"solid_primary\",\n          \"text_color\": \"white\"\n        }\n      ],\n      \"final_slide_cta\": \"CTA for last slide\"\n    }\n  ],\n  \"hashtag_sets\": {\n    \"instagram_30\": \"30 hashtags as single string\",\n    \"tiktok_5\": \"5 hashtags as single string\"\n  }\n}"
+            }
+          ]
+        },
+        "options": { "temperature": 0.82 }
+      },
+      "id": "node_mistral_carousel",
+      "name": "🧠 mistral — Script 3 Carousels",
+      "type": "n8n-nodes-base.ollama",
+      "typeVersion": 1,
+      "position": [2020, 680],
+      "notes": "Scripts 3 carousel types × 6-8 slides. Higher temp for creative, engaging copy. mistral handles structured multi-format output better than llama3 for this task."
+    },
+
+    {
+      "parameters": {
+        "jsCode": "const raw = $input.first().json;\nconst product = $('⚙️ Pass Approved Product').first().json;\n\nlet blogData;\ntry {\n  const content = raw?.message?.content || raw?.response || '';\n  const match = content.match(/```json\\n?([\\s\\S]*?)\\n?```/) || content.match(/({[\\s\\S]*})/);\n  blogData = JSON.parse((match ? match[1] || match[0] : content).trim());\n} catch(e) {\n  blogData = { error: true, message: e.message };\n}\n\nconst primaryUrl = product.store_urls.etsy || product.store_urls.gumroad || product.store_urls.payhip || '#';\nconst contentHtml = (blogData.content_html || '').replace(/STORE_URL/g, primaryUrl);\n\nreturn [{ json: {\n  title: blogData.wordpress_data?.title || product.title,\n  slug: blogData.wordpress_data?.slug || product.title.toLowerCase().replace(/[^a-z0-9]/g, '-'),\n  content: contentHtml,\n  excerpt: blogData.excerpt || '',\n  status: 'draft',\n  meta: {\n    _yoast_wpseo_title: blogData.wordpress_data?.title,\n    _yoast_wpseo_metadesc: blogData.wordpress_data?.meta_description,\n    _yoast_wpseo_focuskw: blogData.wordpress_data?.focus_keyword\n  },\n  categories_names: blogData.wordpress_data?.categories || ['Digital Products'],\n  tags_names: blogData.wordpress_data?.tags || [],\n  featured_image_alt: blogData.wordpress_data?.featured_image_alt || '',\n  pinterest_description: blogData.pinterest_description || '',\n  word_count: blogData.word_count || 0,\n  internal_links_needed: blogData.internal_links_needed || [],\n  wp_domain: product.wp_domain,\n  cover_image: product.cover_image,\n  store_urls: product.store_urls,\n  _product: product\n}}];"
+      },
+      "id": "node_parse_blog",
+      "name": "⚙️ Parse Blog → WordPress Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2300, 380]
+    },
+
+    {
+      "parameters": {
+        "jsCode": "const raw = $input.first().json;\nconst product = $('⚙️ Pass Approved Product').first().json;\n\nlet carouselData;\ntry {\n  const content = raw?.message?.content || raw?.response || '';\n  const match = content.match(/```json\\n?([\\s\\S]*?)\\n?```/) || content.match(/({[\\s\\S]*})/);\n  carouselData = JSON.parse((match ? match[1] || match[0] : content).trim());\n} catch(e) {\n  carouselData = { carousels: [], error: true };\n}\n\nconst storeUrl = product.store_urls.etsy || product.store_urls.gumroad || '#';\n\nreturn (carouselData.carousels || []).map((carousel, i) => ({ json: {\n  ...carousel,\n  carousel_index: i,\n  product_id: product.product_id,\n  product_title: product.title,\n  brand_color_primary: product.brand_color_primary,\n  brand_color_accent: product.brand_color_accent,\n  brand_name: product.brand_name,\n  store_url: storeUrl,\n  hashtag_sets: carouselData.hashtag_sets || {}\n}}));"
+      },
+      "id": "node_parse_carousel",
+      "name": "⚙️ Parse + Split Carousels",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2300, 680]
+    },
+
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "YOUR_N8N_BASE_URL/webhook/humanize-and-engineer",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [{ "name": "Content-Type", "value": "application/json" }] },
+        "sendBody": true,
+        "contentType": "json",
+        "body": "={\n  \"content_type\": \"ebook\",\n  \"raw_content\": \"{{ $json.content.substring(0,3000) }}\",\n  \"product_name\": \"{{ $json.title }}\",\n  \"product_category\": \"{{ $('⚙️ Pass Approved Product').first().json.category }}\"\n}",
+        "options": { "timeout": 300000 }
+      },
+      "id": "node_humanize_blog",
+      "name": "🔌 Humanize Blog (WF05)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [2560, 380]
+    },
+
+    {
+      "parameters": {
+        "jsCode": "// Build 1080x1080 HTML for every slide in this carousel\nconst carousel = $input.first().json;\nconst P = carousel.brand_color_primary || '#1B2A4A';\nconst A = carousel.brand_color_accent || '#C9A84C';\nconst B = carousel.brand_name || 'ClearStack Studio';\nconst STORE = carousel.store_url || '#';\n\nconst bgMap = {\n  solid_primary: `background:${P};`,\n  solid_accent: `background:${A};`,\n  gradient: `background:linear-gradient(135deg,${P} 0%,#2D4A7A 100%);`,\n  white: `background:#FFF;border:3px solid #F0F0F0;`\n};\n\nconst slides = carousel.slides || [];\nconst totalSlides = slides.length;\n\nconst slideHTMLs = slides.map((s, i) => {\n  const bg = bgMap[s.background_style] || bgMap.solid_primary;\n  const tc = s.text_color === 'dark' ? P : '#FFF';\n  const sub = s.text_color === 'dark' ? A : 'rgba(255,255,255,0.82)';\n  const isLast = i === totalSlides - 1;\n  const headlineSize = (s.headline || '').length > 30 ? '54px' : '66px';\n\n  return `<!DOCTYPE html><html><head><meta charset=\"UTF-8\"><style>\n*{margin:0;padding:0;box-sizing:border-box;}\nbody{width:1080px;height:1080px;overflow:hidden;font-family:'Inter','Arial',sans-serif;}\n.slide{width:1080px;height:1080px;${bg}display:flex;flex-direction:column;justify-content:center;align-items:center;padding:90px;position:relative;}\n.top-bar{position:absolute;top:0;left:0;right:0;height:7px;background:${A};}\n.logo{position:absolute;bottom:38px;right:52px;font-size:19px;font-weight:700;color:${sub};letter-spacing:1px;}\n.num{position:absolute;bottom:40px;left:52px;font-size:15px;color:${sub};}\n.emoji{font-size:76px;margin-bottom:28px;line-height:1;}\n.accent-line{width:80px;height:5px;background:${A};border-radius:3px;margin:0 auto 32px;}\n.headline{font-size:${headlineSize};font-weight:800;color:${tc};text-align:center;line-height:1.15;margin-bottom:26px;letter-spacing:-0.5px;}\n.body{font-size:30px;color:${sub};text-align:center;line-height:1.55;max-width:880px;}\n.cta{margin-top:52px;padding:26px 64px;background:${s.background_style==='white'?P:A};color:${s.background_style==='white'?'#FFF':P};font-size:28px;font-weight:700;border-radius:50px;text-decoration:none;}\n.swipe{position:absolute;right:28px;top:50%;transform:translateY(-50%);font-size:36px;opacity:0.45;color:${tc};}\n</style></head><body>\n<div class=\"slide\">\n  <div class=\"top-bar\"></div>\n  ${s.emoji?`<div class=\"emoji\">${s.emoji}</div>`:''}\n  ${i>0?'<div class=\"accent-line\"></div>':''}\n  <div class=\"headline\">${s.headline||''}</div>\n  ${s.body_text?`<div class=\"body\">${s.body_text}</div>`:''}\n  ${isLast&&carousel.final_slide_cta?`<a class=\"cta\" href=\"${STORE}\">${carousel.final_slide_cta}</a>`:''}\n  ${!isLast?'<div class=\"swipe\">›</div>':''}\n  <div class=\"logo\">${B}</div>\n  <div class=\"num\">${i+1} / ${totalSlides}</div>\n</div></body></html>`;\n});\n\nreturn [{ json: {\n  ...carousel,\n  slide_htmls: slideHTMLs,\n  slide_count: slideHTMLs.length,\n  output_dir: `/tmp/carousel_${carousel.product_id}_${carousel.type}`,\n  _html_built: true\n}}];"
+      },
+      "id": "node_build_html",
+      "name": "🖥️ Build Slide HTML (1080×1080)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2560, 680],
+      "notes": "Builds professional 1080x1080px slide HTML. Brand bar, slide counter, logo watermark, CTA on last slide. Renders cleanly via wkhtmltoimage."
+    },
+
+    {
+      "parameters": {
+        "jsCode": "const humanized = $input.first().json;\nconst original = $('⚙️ Parse Blog → WordPress Payload').first().json;\nlet content = original.content;\nif (humanized.humanized_content && !humanized.parse_error && humanized.quality_score !== 'poor') {\n  // Apply humanized paragraphs while preserving HTML heading structure\n  const humanParas = humanized.humanized_content.split('\\n\\n').filter(p=>p.trim().length>40);\n  let paraIndex = 0;\n  content = content.replace(/<p>([^<]{80,})<\\/p>/g, () => {\n    const replacement = humanParas[paraIndex] ? `<p>${humanParas[paraIndex].trim()}</p>` : `<p>${arguments[1]}</p>`;\n    paraIndex++;\n    return replacement;\n  });\n}\nreturn [{ json: { ...original, content, _humanized: true } }];"
+      },
+      "id": "node_merge_humanized",
+      "name": "⚙️ Merge Humanized Blog",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2820, 380]
+    },
+
+    {
+      "parameters": {
+        "command": "=mkdir -p '{{ $json.output_dir }}'\nOUTPUT_DIR='{{ $json.output_dir }}'\n\n{{ $json.slide_htmls.map((html, i) => {\n  const escaped = html.replace(/'/g, \"'\\\\''\" );\n  const padded = String(i+1).padStart(2,'0');\n  return `cat > /tmp/slide_${i}.html << 'SLIDEEOF'\\n${escaped}\\nSLIDEEOF\\nwkhtmltoimage --width 1080 --height 1080 --quality 95 /tmp/slide_${i}.html $OUTPUT_DIR/slide_${padded}.png 2>/dev/null && echo \"OK_${padded}\" || echo \"FAIL_${padded}\"`;\n}).join('\\n') }}\n\nSUCCESS=$(ls $OUTPUT_DIR/slide_*.png 2>/dev/null | wc -l)\necho \"RENDERED|$SUCCESS|$OUTPUT_DIR\""
+      },
+      "id": "node_render_slides",
+      "name": "💻 Render Slides → PNG",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [2820, 680],
+      "notes": "Renders each slide as 1080x1080 PNG. Uses wkhtmltoimage — already installed from vps_setup.sh. Runs all slides for this carousel."
+    },
+
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://{{ $json.wp_domain }}/wp-json/wp/v2/posts",
+        "sendHeaders": true,
+        "headerParameters": [
+          { "name": "Authorization", "value": "Basic YOUR_WP_BASE64_AUTH" },
+          { "name": "Content-Type", "value": "application/json" }
+        ],
+        "sendBody": true,
+        "contentType": "json",
+        "body": "={\n  \"title\": \"{{ $json.title }}\",\n  \"slug\": \"{{ $json.slug }}\",\n  \"content\": {{ JSON.stringify($json.content) }},\n  \"excerpt\": \"{{ $json.excerpt }}\",\n  \"status\": \"draft\",\n  \"meta\": {\n    \"_yoast_wpseo_title\": \"{{ $json.meta._yoast_wpseo_title }}\",\n    \"_yoast_wpseo_metadesc\": \"{{ $json.meta._yoast_wpseo_metadesc }}\",\n    \"_yoast_wpseo_focuskw\": \"{{ $json.meta._yoast_wpseo_focuskw }}\"\n  }\n}",
+        "options": {}
+      },
+      "id": "node_wp_post",
+      "name": "📝 WordPress — Create Draft Post",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [3080, 380],
+      "notes": "SETUP: (1) Install WordPress on VPS. (2) WP Admin > Users > Profile > Application Passwords — generate one. (3) Base64 encode 'username:app_password'. (4) Replace YOUR_WP_BASE64_AUTH. Posts as DRAFT — you review and publish manually, or change status to 'publish' for full auto."
+    },
+
+    {
+      "parameters": {
+        "jsCode": "const stdout = $input.first().json.stdout || '';\nconst renderLine = stdout.split('\\n').find(l => l.startsWith('RENDERED|'));\nconst parts = (renderLine||'').split('|');\nconst successCount = parseInt(parts[1]) || 0;\nconst outputDir = parts[2]?.trim() || '';\n\nconst slideFiles = Array.from({ length: successCount }, (_, i) =>\n  `${outputDir}/slide_${String(i+1).padStart(2,'0')}.png`\n);\n\nconst carouselData = $('🖥️ Build Slide HTML (1080×1080)').first().json;\n\nreturn [{ json: {\n  ...carouselData,\n  rendered_slides: slideFiles,\n  render_count: successCount,\n  output_dir: outputDir,\n  render_ok: successCount > 0\n}}];"
+      },
+      "id": "node_parse_render",
+      "name": "⚙️ Parse Render Results",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3080, 680]
+    },
+
+    {
+      "parameters": {
+        "jsCode": "const wp = $input.first().json;\nconst blog = $('⚙️ Merge Humanized Blog').first().json;\nconst product = $('⚙️ Pass Approved Product').first().json;\nconst postUrl = wp.link || `https://clearstackstudio.com/?p=${wp.id}`;\nconst canonicalUrl = `https://clearstackstudio.com/blog/${blog.slug}`;\nreturn [{ json: {\n  post_id: wp.id,\n  post_url: postUrl,\n  canonical_url: canonicalUrl,\n  title: blog.title,\n  meta_description: blog.meta._yoast_wpseo_metadesc,\n  pinterest_description: blog.pinterest_description,\n  excerpt: blog.excerpt,\n  cover_image: product.cover_image,\n  store_urls: product.store_urls,\n  product_id: product.product_id,\n  product_title: product.title\n}}];"
+      },
+      "id": "node_post_wp",
+      "name": "⚙️ Post-WordPress Actions",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3340, 380]
+    },
+
+    {
+      "parameters": {
+        "jsCode": "const carousel = $input.first().json;\nconst product = $('⚙️ Pass Approved Product').first().json;\nconst slides = carousel.rendered_slides || [];\nconst captions = carousel.platform_caption || {};\nconst storeUrl = product.store_urls.etsy || product.store_urls.gumroad || '#';\nconst pinToken = product.brand?.social?.pinterest?.access_token || 'YOUR_CLEARSTACK_PINTEREST_TOKEN';\nconst pinBoards = product.brand?.social?.pinterest?.board_ids || {};\n\nreturn [\n  { json: { platform: 'instagram', media_paths: slides, caption: captions.instagram || '', carousel_type: carousel.type, product_id: carousel.product_id, hashtags: carousel.hashtag_sets?.instagram_30 || '', store_url: storeUrl } },\n  { json: { platform: 'facebook', media_paths: slides, caption: captions.facebook || '', carousel_type: carousel.type, product_id: carousel.product_id, store_url: storeUrl } },\n  { json: { platform: 'pinterest', media_paths: [slides[0]], caption: captions.pinterest || '', carousel_type: carousel.type, product_id: carousel.product_id, board_id: pinBoards.templates || pinBoards.productivity || 'YOUR_BOARD_ID', link: storeUrl, pin_token: pinToken } }\n];"
+      },
+      "id": "node_split_social",
+      "name": "⚙️ Split Into Platform Posts",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3340, 680]
+    },
+
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://{{ $json.title ? 'clearstackstudio.com' : 'clearstackstudio.com' }}/sitemap_index.xml",
+        "options": { "timeout": 8000, "redirect": { "redirect": { "followRedirects": true } } }
+      },
+      "id": "node_sitemap_ping",
+      "name": "🔍 Ping Google Sitemap",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [3600, 260],
+      "notes": "Fetches sitemap to trigger Google re-crawl. Also submit manually to Google Search Console once blog is live."
+    },
+
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.pinterest.com/v5/pins",
+        "sendHeaders": true,
+        "headerParameters": [
+          { "name": "Authorization", "value": "Bearer YOUR_CLEARSTACK_PINTEREST_TOKEN" },
+          { "name": "Content-Type", "value": "application/json" }
+        ],
+        "sendBody": true,
+        "contentType": "json",
+        "body": "={\n  \"board_id\": \"YOUR_CLEARSTACK_PRODUCTIVITY_BOARD_ID\",\n  \"title\": \"{{ $json.title }}\",\n  \"description\": \"{{ $json.pinterest_description }}\",\n  \"link\": \"{{ $json.canonical_url }}\",\n  \"media_source\": { \"source_type\": \"url\", \"url\": \"{{ $json.cover_image }}\" }\n}",
+        "options": {}
+      },
+      "id": "node_pinterest_blog",
+      "name": "📌 Pinterest — Pin → Blog Post",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [3600, 420],
+      "notes": "Creates Pinterest pin linking to blog post. This is the core Pinterest→Blog→Store traffic loop. Pinterest amplifies blog content reach massively."
+    },
+
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            { "conditions": { "conditions": [{ "leftValue": "={{ $json.platform }}", "rightValue": "instagram", "operator": { "type": "string", "operation": "equals" } }] }, "renameOutput": true, "outputKey": "Instagram" },
+            { "conditions": { "conditions": [{ "leftValue": "={{ $json.platform }}", "rightValue": "facebook", "operator": { "type": "string", "operation": "equals" } }] }, "renameOutput": true, "outputKey": "Facebook" },
+            { "conditions": { "conditions": [{ "leftValue": "={{ $json.platform }}", "rightValue": "pinterest", "operator": { "type": "string", "operation": "equals" } }] }, "renameOutput": true, "outputKey": "Pinterest" }
+          ]
+        },
+        "options": {}
+      },
+      "id": "node_route_social",
+      "name": "🔀 Route to Platforms",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [3600, 680]
+    },
+
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://graph.facebook.com/v18.0/{{ $('🔌 Get Brand Config (WF06)').first().json.brand.social.instagram.user_id }}/media",
+        "sendHeaders": true,
+        "headerParameters": [{ "name": "Content-Type", "value": "application/json" }],
+        "sendBody": true,
+        "contentType": "json",
+        "body": "={\n  \"caption\": \"{{ $json.caption }}\\n\\n{{ $json.hashtags }}\",\n  \"access_token\": \"{{ $('🔌 Get Brand Config (WF06)').first().json.brand.social.instagram.access_token }}\"\n}",
+        "options": {}
+      },
+      "id": "node_ig_post",
+      "name": "📸 Post IG Carousel",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [3860, 560]
+    },
+
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://graph.facebook.com/v18.0/{{ $('🔌 Get Brand Config (WF06)').first().json.brand.social.facebook.page_id }}/feed",
+        "sendHeaders": true,
+        "headerParameters": [{ "name": "Content-Type", "value": "application/json" }],
+        "sendBody": true,
+        "contentType": "json",
+        "body": "={\n  \"message\": \"{{ $json.caption }}\",\n  \"link\": \"{{ $json.store_url }}\",\n  \"access_token\": \"{{ $('🔌 Get Brand Config (WF06)').first().json.brand.social.facebook.access_token }}\"\n}",
+        "options": {}
+      },
+      "id": "node_fb_post",
+      "name": "👥 Post FB Carousel",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [3860, 680]
+    },
+
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.pinterest.com/v5/pins",
+        "sendHeaders": true,
+        "headerParameters": [
+          { "name": "Authorization", "value": "=Bearer {{ $json.pin_token }}" },
+          { "name": "Content-Type", "value": "application/json" }
+        ],
+        "sendBody": true,
+        "contentType": "json",
+        "body": "={\n  \"board_id\": \"{{ $json.board_id }}\",\n  \"title\": \"{{ $json.product_id }}\",\n  \"description\": \"{{ $json.caption }}\",\n  \"link\": \"{{ $json.link }}\",\n  \"media_source\": { \"source_type\": \"url\", \"url\": \"{{ $json.media_paths[0] }}\" }\n}",
+        "options": {}
+      },
+      "id": "node_pin_carousel",
+      "name": "📌 Post Pinterest Carousel Pin",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [3860, 800]
+    },
+
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": { "value": "YOUR_GOOGLE_SHEET_ID_HERE" },
+        "sheetName": { "value": "Content_Calendar" },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Date": "={{ new Date().toISOString().split('T')[0] }}",
+            "Product_ID": "={{ $('⚙️ Pass Approved Product').first().json.product_id }}",
+            "Product_Title": "={{ $('⚙️ Pass Approved Product').first().json.title }}",
+            "Brand": "clearstack",
+            "Blog_Post_ID": "={{ $('WordPress — Create Draft Post').first().json?.id || 'N/A' }}",
+            "Blog_Status": "Draft — Review Before Publishing",
+            "Carousels_Generated": "3 (Educational, Problem/Solution, Before/After)",
+            "Pinterest_Blog_Pin": "={{ $('📌 Pinterest — Pin → Blog Post').first().json?.id || 'N/A' }}",
+            "IG_Posted": "Yes",
+            "FB_Posted": "Yes",
+            "Pinterest_Carousel": "Yes",
+            "Total_Content_Pieces": "7",
+            "Status": "Complete",
+            "Notes": "Blog draft ready for review. Change WP status to publish when approved."
+          }
+        },
+        "options": {}
+      },
+      "id": "node_log_content",
+      "name": "📊 Log to Content_Calendar",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [4120, 580]
+    },
+
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\n  \"success\": true,\n  \"product_id\": \"{{ $('⚙️ Pass Approved Product').first().json.product_id }}\",\n  \"generated\": { \"blog_post\": \"draft\", \"carousels\": 3, \"pinterest_pin\": true, \"total\": 7 },\n  \"next_action\": \"Review blog draft in WordPress and publish when ready\"\n}"
+      },
+      "id": "node_respond",
+      "name": "📤 Return Summary",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [4380, 500]
+    }
+
+  ],
+  "connections": {
+    "🔔 Webhook — Trigger Content Engine": { "main": [[{ "node": "⚙️ Validate + Build Product Context", "type": "main", "index": 0 }]] },
+    "⚙️ Validate + Build Product Context": { "main": [[{ "node": "🔌 Get Brand Config (WF06)", "type": "main", "index": 0 }]] },
+    "🔌 Get Brand Config (WF06)": { "main": [[{ "node": "⚙️ Merge Brand + Product", "type": "main", "index": 0 }]] },
+    "⚙️ Merge Brand + Product": { "main": [[{ "node": "🔌 Halal Check (WF07)", "type": "main", "index": 0 }]] },
+    "🔌 Halal Check (WF07)": { "main": [[{ "node": "🔀 Halal Approved?", "type": "main", "index": 0 }]] },
+    "🔀 Halal Approved?": {
+      "main": [
+        [{ "node": "📊 Log Blocked Content", "type": "main", "index": 0 }],
+        [{ "node": "⚙️ Pass Approved Product", "type": "main", "index": 0 }]
+      ]
+    },
+    "⚙️ Pass Approved Product": {
+      "main": [[
+        { "node": "🧠 llama3 — Write SEO Blog Post", "type": "main", "index": 0 },
+        { "node": "🧠 mistral — Script 3 Carousels", "type": "main", "index": 0 }
+      ]]
+    },
+    "🧠 llama3 — Write SEO Blog Post": { "main": [[{ "node": "⚙️ Parse Blog → WordPress Payload", "type": "main", "index": 0 }]] },
+    "⚙️ Parse Blog → WordPress Payload": { "main": [[{ "node": "🔌 Humanize Blog (WF05)", "type": "main", "index": 0 }]] },
+    "🔌 Humanize Blog (WF05)": { "main": [[{ "node": "⚙️ Merge Humanized Blog", "type": "main", "index": 0 }]] },
+    "⚙️ Merge Humanized Blog": { "main": [[{ "node": "📝 WordPress — Create Draft Post", "type": "main", "index": 0 }]] },
+    "📝 WordPress — Create Draft Post": { "main": [[{ "node": "⚙️ Post-WordPress Actions", "type": "main", "index": 0 }]] },
+    "⚙️ Post-WordPress Actions": {
+      "main": [[
+        { "node": "🔍 Ping Google Sitemap", "type": "main", "index": 0 },
+        { "node": "📌 Pinterest — Pin → Blog Post", "type": "main", "index": 0 }
+      ]]
+    },
+    "📌 Pinterest — Pin → Blog Post": { "main": [[{ "node": "📊 Log to Content_Calendar", "type": "main", "index": 0 }]] },
+    "🧠 mistral — Script 3 Carousels": { "main": [[{ "node": "⚙️ Parse + Split Carousels", "type": "main", "index": 0 }]] },
+    "⚙️ Parse + Split Carousels": { "main": [[{ "node": "🖥️ Build Slide HTML (1080×1080)", "type": "main", "index": 0 }]] },
+    "🖥️ Build Slide HTML (1080×1080)": { "main": [[{ "node": "💻 Render Slides → PNG", "type": "main", "index": 0 }]] },
+    "💻 Render Slides → PNG": { "main": [[{ "node": "⚙️ Parse Render Results", "type": "main", "index": 0 }]] },
+    "⚙️ Parse Render Results": { "main": [[{ "node": "⚙️ Split Into Platform Posts", "type": "main", "index": 0 }]] },
+    "⚙️ Split Into Platform Posts": { "main": [[{ "node": "🔀 Route to Platforms", "type": "main", "index": 0 }]] },
+    "🔀 Route to Platforms": {
+      "main": [
+        [{ "node": "📸 Post IG Carousel", "type": "main", "index": 0 }],
+        [{ "node": "👥 Post FB Carousel", "type": "main", "index": 0 }],
+        [{ "node": "📌 Post Pinterest Carousel Pin", "type": "main", "index": 0 }]
+      ]
+    },
+    "📸 Post IG Carousel": { "main": [[{ "node": "📊 Log to Content_Calendar", "type": "main", "index": 0 }]] },
+    "👥 Post FB Carousel": { "main": [[{ "node": "📊 Log to Content_Calendar", "type": "main", "index": 0 }]] },
+    "📌 Post Pinterest Carousel Pin": { "main": [[{ "node": "📊 Log to Content_Calendar", "type": "main", "index": 0 }]] },
+    "📊 Log to Content_Calendar": { "main": [[{ "node": "📤 Return Summary", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1", "saveManualExecutions": true, "executionTimeout": 1800 },
+  "meta": { "description": "Workflow 09A: Content Engine — Blog + Carousel. Two parallel pipelines: (1) Blog — llama3 writes 1800-2200 word SEO post → WF05 humanizes → WordPress draft → Pinterest pin linking to blog → sitemap ping. (2) Carousel — mistral scripts 3 types × 6-8 slides → HTML rendered as 1080x1080 PNGs via wkhtmltoimage → posted to Instagram, Facebook, Pinterest. All content halal-checked via WF07, brand-configured via WF06. Logs to Content_Calendar sheet." }
+}

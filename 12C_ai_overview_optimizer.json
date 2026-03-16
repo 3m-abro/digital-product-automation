@@ -1,0 +1,166 @@
+{
+  "name": "12C — AI Overview Optimizer (ChatGPT / Perplexity / Google AI)",
+  "nodes": [
+
+    {
+      "parameters": {
+        "rule": { "interval": [{ "field": "weeks", "weeksInterval": 1 }] }
+      },
+      "id": "node_schedule",
+      "name": "⏰ Weekly AI Citation Audit",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [200, 300],
+      "notes": "Weekly audit of all published content. Rewrites underperforming sections to maximize AI citation probability. Also triggered by WF09A after new posts."
+    },
+
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "optimize-for-ai",
+        "responseMode": "onReceived",
+        "responseData": "allEntries"
+      },
+      "id": "node_webhook",
+      "name": "🔔 Webhook — Optimize Post for AI Citations",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1.1,
+      "position": [200, 500],
+      "notes": "Called with specific post_id to optimize. Called by WF09A after new post creation."
+    },
+
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "https://clearstackstudio.com/wp-json/wp/v2/posts",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [{ "name": "Authorization", "value": "Basic YOUR_WP_BASE64_AUTH" }] },
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "per_page", "value": "30" },
+            { "name": "status", "value": "publish" },
+            { "name": "fields", "value": "id,title,slug,link,content,excerpt" }
+          ]
+        },
+        "options": {}
+      },
+      "id": "node_fetch_posts",
+      "name": "📥 Fetch Posts to Optimize",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [500, 400]
+    },
+
+    {
+      "parameters": {
+        "jsCode": "const posts = $input.all().map(i => i.json);\n\n// Check each post for AI optimization signals\n// Posts are scored on how likely they are to be cited by AI systems\nconst scoredPosts = posts.map(post => {\n  const content = (post.content?.rendered || '').replace(/<[^>]+>/g, ' ');\n  const title = post.title?.rendered || '';\n  \n  let score = 0;\n  const issues = [];\n  const strengths = [];\n  \n  // ── POSITIVE SIGNALS ──────────────────────────────────\n  // 1. Has a clear definition in first paragraph\n  const firstPara = content.split('\\n').slice(0, 3).join(' ');\n  if (firstPara.match(/is a |is the |refers to |defined as |means /i)) {\n    score += 20; strengths.push('Has definition');\n  } else {\n    issues.push('Missing clear definition in opening paragraph');\n  }\n  \n  // 2. Has numbered lists or step-by-step structure\n  if (post.content?.rendered?.includes('<ol>') || post.content?.rendered?.includes('<li>')) {\n    score += 15; strengths.push('Has structured lists');\n  } else {\n    issues.push('No structured lists — AI prefers enumerable content');\n  }\n  \n  // 3. Has FAQ section\n  if (content.toLowerCase().includes('frequently asked') || \n      post.content?.rendered?.includes('application/ld+json') && post.content?.rendered?.includes('FAQPage')) {\n    score += 25; strengths.push('Has FAQ / FAQPage schema');\n  } else {\n    issues.push('Missing FAQ section — FAQs are highest-cited content type');\n  }\n  \n  // 4. Has concise, quotable sentences (under 25 words)\n  const sentences = content.match(/[^.!?]+[.!?]+/g) || [];\n  const shortSentences = sentences.filter(s => s.trim().split(' ').length < 25).length;\n  const shortRatio = shortSentences / Math.max(sentences.length, 1);\n  if (shortRatio > 0.6) {\n    score += 15; strengths.push('Good sentence length for citations');\n  } else {\n    issues.push('Sentences too long — AI prefers concise, quotable sentences');\n  }\n  \n  // 5. Has specific numbers/statistics\n  if (content.match(/\\d+%|\\d+ (times|hours|minutes|days|percent|steps|ways|tips)/i)) {\n    score += 10; strengths.push('Has specific numbers');\n  } else {\n    issues.push('No specific numbers — add stats or quantified claims');\n  }\n  \n  // 6. Has schema markup already\n  if (post.content?.rendered?.includes('application/ld+json')) {\n    score += 15; strengths.push('Has structured data schema');\n  } else {\n    issues.push('Missing JSON-LD schema — run WF12A first');\n  }\n  \n  // ── NEGATIVE SIGNALS ──────────────────────────────────\n  // Passive voice (AI cites authoritative, active statements)\n  const passiveCount = (content.match(/\\b(is|are|was|were|be|been|being)\\s+\\w+ed\\b/gi) || []).length;\n  if (passiveCount > 5) {\n    score -= 10; issues.push(`High passive voice (${passiveCount} instances)`);\n  }\n  \n  return {\n    post_id: post.id,\n    post_title: title,\n    post_url: post.link,\n    post_content: post.content?.rendered || '',\n    ai_citation_score: score,\n    grade: score >= 70 ? 'A' : score >= 50 ? 'B' : score >= 30 ? 'C' : 'D',\n    strengths,\n    issues,\n    needs_optimization: score < 60\n  };\n});\n\n// Return only posts that need optimization, sorted by lowest score first\nconst toOptimize = scoredPosts\n  .filter(p => p.needs_optimization)\n  .sort((a, b) => a.ai_citation_score - b.ai_citation_score)\n  .slice(0, 5); // Process max 5 per run\n\nreturn toOptimize.map(p => ({ json: p }));"
+      },
+      "id": "node_score_posts",
+      "name": "⚙️ Score Posts for AI Citation Potential",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [760, 400],
+      "notes": "Scores each post on 6 AI citation signals: clear definition, structured lists, FAQ section, sentence length, specific numbers, schema markup. Posts scoring under 60/100 get optimized."
+    },
+
+    {
+      "parameters": {
+        "model": "mistral",
+        "messages": {
+          "values": [
+            {
+              "role": "system",
+              "content": "You are an expert in AI search optimization — specifically in how ChatGPT, Perplexity, Google AI Overviews, and Claude select content to cite in their responses. You rewrite blog content to maximize the probability of being cited by AI systems. Key principles: (1) AI systems prefer content that makes clear, declarative factual statements, (2) they love definitions, numbered lists, and FAQ-style Q&A, (3) they cite content that directly answers a question in the first sentence, (4) they prefer authoritative active voice over passive, (5) standalone sentences that are complete thoughts get cited most. Respond in valid JSON only."
+            },
+            {
+              "role": "user",
+              "content": "=Optimize this blog post for AI citation (ChatGPT, Perplexity, Google AI Overview):\n\nPost Title: {{$json.post_title}}\nCurrent AI Citation Score: {{$json.ai_citation_score}}/100 (Grade: {{$json.grade}})\n\nIssues to fix:\n{{$json.issues.join('\\n')}}\n\nCurrent strengths (preserve these):\n{{$json.strengths.join('\\n')}}\n\nIMPORTANT CONSTRAINTS:\n- Do NOT rewrite the entire post — only add/improve specific sections\n- Keep all existing headings and main content\n- Only ADD or IMPROVE these specific elements:\n  1. Opening definition paragraph (if missing/weak)\n  2. A \"Quick Answer\" box at the very top (AI systems LOVE these)\n  3. FAQ section (if missing or needs expansion)\n  4. Convert any vague claims to specific numbered facts\n  5. Add a \"Key Takeaways\" bulleted summary near top\n\nThe \"Quick Answer\" box format:\n  <div class=\"quick-answer\">\n  <strong>Quick Answer:</strong> [1-2 sentence direct answer to the implied question in the title]\n  </div>\n\nRespond ONLY with this JSON:\n{\n  \"quick_answer_html\": \"<div class='quick-answer'>...</div>\",\n  \"improved_opening_paragraph\": \"New first paragraph with clear definition — 50-70 words\",\n  \"key_takeaways_html\": \"<ul class='key-takeaways'><li>...</li></ul> — 4-5 specific takeaways\",\n  \"new_faq_section_html\": \"<h2>Frequently Asked Questions</h2> + Q&A HTML — 4 questions\",\n  \"faq_schema_entries\": [\n    { \"question\": \"Q?\", \"answer\": \"40-60 word standalone answer\" }\n  ],\n  \"insertion_instructions\": {\n    \"quick_answer\": \"Insert after H1 title, before first paragraph\",\n    \"key_takeaways\": \"Insert after quick answer box\",\n    \"faq_section\": \"Replace existing FAQ or append before final CTA\"\n  },\n  \"estimated_new_score\": 85,\n  \"optimization_summary\": \"Brief description of changes made\"\n}"
+            }
+          ]
+        },
+        "options": { "temperature": 0.4 }
+      },
+      "id": "node_mistral_optimize",
+      "name": "🧠 mistral — Optimize for AI Citations",
+      "type": "n8n-nodes-base.ollama",
+      "typeVersion": 1,
+      "position": [1020, 400],
+      "notes": "Low temp (0.4) for precise, factual optimization. mistral generates specific additions: quick answer box, opening definition, key takeaways, expanded FAQ. Doesn't rewrite existing content — only adds high-value citation-friendly elements."
+    },
+
+    {
+      "parameters": {
+        "jsCode": "const raw = $input.first().json;\nconst post = $('⚙️ Score Posts for AI Citation Potential').first().json;\n\nlet optimizations;\ntry {\n  const content = raw?.message?.content || raw?.response || '';\n  const match = content.match(/```json\\n?([\\s\\S]*?)\\n?```/) || content.match(/({[\\s\\S]*})/);\n  optimizations = JSON.parse((match ? match[1] || match[0] : content).trim());\n} catch(e) {\n  optimizations = { error: true };\n}\n\nif (optimizations.error) {\n  return [{ json: { skipped: true, post_id: post.post_id, reason: 'Parse error' } }];\n}\n\nlet updatedContent = post.post_content;\n\n// 1. Inject Quick Answer box after H1\nif (optimizations.quick_answer_html) {\n  updatedContent = updatedContent.replace(\n    /(<\\/h1>|<h1[^>]*>[^<]*<\\/h1>)/i,\n    `$1\\n${optimizations.quick_answer_html}`\n  );\n}\n\n// 2. Inject Key Takeaways after quick answer (or after H1)\nif (optimizations.key_takeaways_html) {\n  if (updatedContent.includes('quick-answer')) {\n    updatedContent = updatedContent.replace(\n      /(class=[\"']quick-answer[\"'][^>]*>.*?<\\/div>)/is,\n      `$1\\n${optimizations.key_takeaways_html}`\n    );\n  }\n}\n\n// 3. Replace or append FAQ section\nif (optimizations.new_faq_section_html) {\n  if (updatedContent.toLowerCase().includes('frequently asked')) {\n    // Replace existing FAQ\n    updatedContent = updatedContent.replace(\n      /<h2[^>]*>[^<]*[Ff]requently[^<]*<\\/h2>[\\s\\S]*?(?=<h2|$)/i,\n      optimizations.new_faq_section_html + '\\n'\n    );\n  } else {\n    // Append before last CTA paragraph\n    updatedContent += '\\n' + optimizations.new_faq_section_html;\n  }\n}\n\n// 4. Update FAQPage schema with new entries\nif (optimizations.faq_schema_entries?.length) {\n  const newFaqSchema = {\n    '@context': 'https://schema.org',\n    '@type': 'FAQPage',\n    'mainEntity': optimizations.faq_schema_entries.map(q => ({\n      '@type': 'Question',\n      'name': q.question,\n      'acceptedAnswer': { '@type': 'Answer', 'text': q.answer }\n    }))\n  };\n  \n  const newSchemaTag = `<script type=\"application/ld+json\">${JSON.stringify(newFaqSchema)}</script>`;\n  \n  // Replace existing FAQ schema or prepend\n  if (updatedContent.includes('FAQPage')) {\n    updatedContent = updatedContent.replace(\n      /<script type=\"application\\/ld\\+json\">[\\s\\S]*?FAQPage[\\s\\S]*?<\\/script>/i,\n      newSchemaTag\n    );\n  } else {\n    updatedContent = newSchemaTag + '\\n' + updatedContent;\n  }\n}\n\nreturn [{ json: {\n  post_id: post.post_id,\n  post_title: post.post_title,\n  original_score: post.ai_citation_score,\n  estimated_new_score: optimizations.estimated_new_score || post.ai_citation_score + 25,\n  optimization_summary: optimizations.optimization_summary,\n  updated_content: updatedContent,\n  changes_made: [\n    optimizations.quick_answer_html ? 'Added Quick Answer box' : null,\n    optimizations.key_takeaways_html ? 'Added Key Takeaways' : null,\n    optimizations.new_faq_section_html ? 'Expanded FAQ section' : null,\n    optimizations.faq_schema_entries?.length ? 'Updated FAQPage schema' : null\n  ].filter(Boolean)\n}}];"
+      },
+      "id": "node_apply_optimizations",
+      "name": "⚙️ Apply AI Optimizations to Content",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1280, 400],
+      "notes": "Applies all optimizations to existing content without destroying it. Inserts Quick Answer box, Key Takeaways, expanded FAQ, updated schema. Surgical additions only."
+    },
+
+    {
+      "parameters": {
+        "method": "PUT",
+        "url": "=https://clearstackstudio.com/wp-json/wp/v2/posts/{{ $json.post_id }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "Basic YOUR_WP_BASE64_AUTH" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "body": "={\n  \"content\": {{ JSON.stringify($json.updated_content) }}\n}",
+        "options": {}
+      },
+      "id": "node_update_post",
+      "name": "✏️ Update Post with AI Optimizations",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1540, 400]
+    },
+
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": { "value": "YOUR_GOOGLE_SHEET_ID_HERE" },
+        "sheetName": { "value": "AI_SEO_Optimization_Log" },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Date": "={{ new Date().toISOString().split('T')[0] }}",
+            "Post_Title": "={{ $('⚙️ Apply AI Optimizations to Content').first().json.post_title }}",
+            "Post_ID": "={{ $('⚙️ Apply AI Optimizations to Content').first().json.post_id }}",
+            "Original_Score": "={{ $('⚙️ Apply AI Optimizations to Content').first().json.original_score }}",
+            "New_Score_Est": "={{ $('⚙️ Apply AI Optimizations to Content').first().json.estimated_new_score }}",
+            "Changes_Made": "={{ $('⚙️ Apply AI Optimizations to Content').first().json.changes_made.join(' | ') }}",
+            "Summary": "={{ $('⚙️ Apply AI Optimizations to Content').first().json.optimization_summary }}",
+            "Status": "Optimized"
+          }
+        },
+        "options": {}
+      },
+      "id": "node_log",
+      "name": "📊 Log to AI_SEO_Optimization_Log",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [1800, 400]
+    }
+
+  ],
+  "connections": {
+    "⏰ Weekly AI Citation Audit": { "main": [[{ "node": "📥 Fetch Posts to Optimize", "type": "main", "index": 0 }]] },
+    "🔔 Webhook — Optimize Post for AI Citations": { "main": [[{ "node": "📥 Fetch Posts to Optimize", "type": "main", "index": 0 }]] },
+    "📥 Fetch Posts to Optimize": { "main": [[{ "node": "⚙️ Score Posts for AI Citation Potential", "type": "main", "index": 0 }]] },
+    "⚙️ Score Posts for AI Citation Potential": { "main": [[{ "node": "🧠 mistral — Optimize for AI Citations", "type": "main", "index": 0 }]] },
+    "🧠 mistral — Optimize for AI Citations": { "main": [[{ "node": "⚙️ Apply AI Optimizations to Content", "type": "main", "index": 0 }]] },
+    "⚙️ Apply AI Optimizations to Content": { "main": [[{ "node": "✏️ Update Post with AI Optimizations", "type": "main", "index": 0 }]] },
+    "✏️ Update Post with AI Optimizations": { "main": [[{ "node": "📊 Log to AI_SEO_Optimization_Log", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1", "saveManualExecutions": true, "executionTimeout": 1800 },
+  "meta": { "description": "WF12C: AI Overview Optimizer. Scores all posts on 6 AI citation signals. Posts under 60/100 get surgical additions: Quick Answer box (highest citation trigger), Key Takeaways, expanded FAQ with 40-60 word standalone answers, updated FAQPage schema. Weekly audit + instant trigger from WF09A. Target: every post scores 70+ for ChatGPT/Perplexity/Google AI citation." }
+}

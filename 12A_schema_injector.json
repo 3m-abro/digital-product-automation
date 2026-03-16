@@ -1,0 +1,141 @@
+{
+  "name": "12A — Schema Markup Injector (Structured Data)",
+  "nodes": [
+
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "inject-schema",
+        "responseMode": "onReceived",
+        "responseData": "allEntries"
+      },
+      "id": "node_webhook",
+      "name": "🔔 Webhook — Inject Schema (called by WF09A)",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1.1,
+      "position": [200, 300],
+      "notes": "Called by WF09A after every new blog post. Also runs daily scan to patch any posts missing schema. Receives: post_id, post_type (article/product/faq)."
+    },
+
+    {
+      "parameters": {
+        "rule": { "interval": [{ "field": "hours", "hoursInterval": 24 }] }
+      },
+      "id": "node_schedule",
+      "name": "⏰ Daily Schema Audit (3 AM)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [200, 500],
+      "notes": "Daily scan finds any posts missing schema markup and injects it."
+    },
+
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "https://clearstackstudio.com/wp-json/wp/v2/posts",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [{ "name": "Authorization", "value": "Basic YOUR_WP_BASE64_AUTH" }] },
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "per_page", "value": "50" },
+            { "name": "status", "value": "publish" },
+            { "name": "fields", "value": "id,title,slug,link,content,excerpt,date,modified,author,categories,tags" }
+          ]
+        },
+        "options": {}
+      },
+      "id": "node_fetch_posts",
+      "name": "📥 Fetch All Published Posts",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [500, 400]
+    },
+
+    {
+      "parameters": {
+        "jsCode": "const posts = $input.all().map(i => i.json);\n\n// Filter posts that don't already have schema injected\n// We detect this by looking for application/ld+json in content\nconst postsNeedingSchema = posts.filter(p => {\n  const content = p.content?.rendered || '';\n  return !content.includes('application/ld+json');\n});\n\nconsole.log(`${posts.length} total posts | ${postsNeedingSchema.length} need schema`);\n\nreturn postsNeedingSchema.map(post => {\n  // Detect post type from content and title\n  const content = (post.content?.rendered || '').toLowerCase();\n  const title = (post.title?.rendered || '').toLowerCase();\n  \n  // Detect if it's an FAQ-heavy post\n  const hasFaq = content.includes('<h2') && (\n    content.includes('frequently asked') ||\n    content.includes('what is') ||\n    content.includes('how do') ||\n    content.includes('?</h')\n  );\n  \n  // Detect if it's a how-to post  \n  const isHowTo = title.startsWith('how to') || title.includes('step-by-step') || title.includes('guide');\n  \n  // Detect if it's a product review/comparison\n  const isProduct = title.includes('best ') || title.includes('review') || title.includes('template');\n  \n  return { json: {\n    post_id: post.id,\n    post_title: post.title?.rendered || '',\n    post_url: post.link,\n    post_slug: post.slug,\n    post_excerpt: (post.excerpt?.rendered || '').replace(/<[^>]+>/g, '').trim().substring(0, 200),\n    post_content: post.content?.rendered || '',\n    post_date: post.date,\n    post_modified: post.modified,\n    is_faq: hasFaq,\n    is_how_to: isHowTo,\n    is_product_review: isProduct,\n    schema_types_needed: [\n      'Article',\n      hasFaq ? 'FAQPage' : null,\n      isHowTo ? 'HowTo' : null\n    ].filter(Boolean)\n  }};\n});"
+      },
+      "id": "node_detect_schema_needs",
+      "name": "⚙️ Detect Schema Types Needed",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [760, 400],
+      "notes": "Detects which schema types each post needs: Article (all posts), FAQPage (posts with Q&A sections), HowTo (step-by-step guides). Skips posts that already have schema injected."
+    },
+
+    {
+      "parameters": {
+        "jsCode": "// Build complete JSON-LD schema markup for this post\nconst post = $input.first().json;\nconst siteUrl = 'https://clearstackstudio.com';\nconst authorName = 'ClearStack Studio';\nconst orgName = 'ClearStack Studio';\n\nconst schemas = [];\n\n// ── 1. ARTICLE SCHEMA (all posts) ───────────────────────\nschemas.push({\n  '@context': 'https://schema.org',\n  '@type': 'Article',\n  'headline': post.post_title,\n  'description': post.post_excerpt,\n  'url': post.post_url,\n  'datePublished': post.post_date,\n  'dateModified': post.post_modified || post.post_date,\n  'author': {\n    '@type': 'Organization',\n    'name': authorName,\n    'url': siteUrl\n  },\n  'publisher': {\n    '@type': 'Organization',\n    'name': orgName,\n    'url': siteUrl,\n    'logo': {\n      '@type': 'ImageObject',\n      'url': `${siteUrl}/wp-content/themes/clearstack/logo.png`\n    }\n  },\n  'mainEntityOfPage': {\n    '@type': 'WebPage',\n    '@id': post.post_url\n  }\n});\n\n// ── 2. FAQPAGE SCHEMA (posts with Q&A) ──────────────────\nif (post.is_faq) {\n  // Extract Q&A pairs from HTML content\n  const content = post.post_content || '';\n  const qaPairs = [];\n  \n  // Match h2/h3 questions followed by paragraphs\n  const questionMatches = content.matchAll(/<h[23][^>]*>([^<]*\\?[^<]*)<\\/h[23]>\\s*<p>([^<]+(?:<[^>]+>[^<]*<\\/[^>]+>)*[^<]*)<\\/p>/gi);\n  \n  for (const match of questionMatches) {\n    const question = match[1].replace(/<[^>]+>/g, '').trim();\n    const answer = match[2].replace(/<[^>]+>/g, '').trim();\n    if (question && answer && question.includes('?')) {\n      qaPairs.push({ question, answer });\n    }\n  }\n  \n  if (qaPairs.length > 0) {\n    schemas.push({\n      '@context': 'https://schema.org',\n      '@type': 'FAQPage',\n      'mainEntity': qaPairs.map(qa => ({\n        '@type': 'Question',\n        'name': qa.question,\n        'acceptedAnswer': {\n          '@type': 'Answer',\n          'text': qa.answer.substring(0, 500)\n        }\n      }))\n    });\n  }\n}\n\n// ── 3. HOWTO SCHEMA (step-by-step posts) ────────────────\nif (post.is_how_to) {\n  const content = post.post_content || '';\n  const steps = [];\n  \n  // Extract numbered steps or h2 sections\n  const stepMatches = content.matchAll(/<h[23][^>]*>([^<]*(?:step|tip|method|way)[^<]*)<\\/h[23]>\\s*<p>([^<]+)<\\/p>/gi);\n  \n  for (const match of stepMatches) {\n    const stepName = match[1].replace(/<[^>]+>/g, '').trim();\n    const stepText = match[2].replace(/<[^>]+>/g, '').trim();\n    if (stepName && stepText) {\n      steps.push({ name: stepName, text: stepText });\n    }\n  }\n  \n  if (steps.length > 0) {\n    schemas.push({\n      '@context': 'https://schema.org',\n      '@type': 'HowTo',\n      'name': post.post_title,\n      'description': post.post_excerpt,\n      'step': steps.map((s, i) => ({\n        '@type': 'HowToStep',\n        'position': i + 1,\n        'name': s.name,\n        'text': s.text\n      }))\n    });\n  }\n}\n\n// ── 4. BREADCRUMB SCHEMA (all posts) ────────────────────\nschemas.push({\n  '@context': 'https://schema.org',\n  '@type': 'BreadcrumbList',\n  'itemListElement': [\n    { '@type': 'ListItem', 'position': 1, 'name': 'Home', 'item': siteUrl },\n    { '@type': 'ListItem', 'position': 2, 'name': 'Blog', 'item': `${siteUrl}/blog` },\n    { '@type': 'ListItem', 'position': 3, 'name': post.post_title, 'item': post.post_url }\n  ]\n});\n\n// Build the script tag(s)\nconst schemaHtml = schemas\n  .map(s => `<script type=\"application/ld+json\">${JSON.stringify(s, null, 2)}</script>`)\n  .join('\\n');\n\n// Inject schema at the beginning of post content\nconst existingContent = post.post_content || '';\nconst updatedContent = schemaHtml + '\\n' + existingContent;\n\nreturn [{ json: {\n  post_id: post.post_id,\n  post_title: post.post_title,\n  schema_types: post.schema_types_needed,\n  schemas_injected: schemas.length,\n  faq_entries: schemas.find(s => s['@type'] === 'FAQPage')?.mainEntity?.length || 0,\n  howto_steps: schemas.find(s => s['@type'] === 'HowTo')?.step?.length || 0,\n  updated_content: updatedContent,\n  schema_html_preview: schemaHtml.substring(0, 200) + '...'\n}}];"
+      },
+      "id": "node_build_schema",
+      "name": "⚙️ Build JSON-LD Schema Markup",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1020, 400],
+      "notes": "Builds Article, FAQPage (extracts real Q&A from content), HowTo (extracts steps), and Breadcrumb schema. All in valid JSON-LD format. FAQPage is the highest-value schema for AI citations and featured snippets."
+    },
+
+    {
+      "parameters": {
+        "method": "PUT",
+        "url": "=https://clearstackstudio.com/wp-json/wp/v2/posts/{{ $json.post_id }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "Basic YOUR_WP_BASE64_AUTH" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "body": "={\n  \"content\": {{ JSON.stringify($json.updated_content) }}\n}",
+        "options": {}
+      },
+      "id": "node_update_post",
+      "name": "✏️ Inject Schema Into WordPress Post",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1280, 400],
+      "notes": "Updates WordPress post with schema prepended to content. Google and AI search engines pick this up within 1-7 days of re-crawling."
+    },
+
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": { "value": "YOUR_GOOGLE_SHEET_ID_HERE" },
+        "sheetName": { "value": "Schema_Injection_Log" },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Date": "={{ new Date().toISOString().split('T')[0] }}",
+            "Post_Title": "={{ $('⚙️ Build JSON-LD Schema Markup').first().json.post_title }}",
+            "Post_ID": "={{ $('⚙️ Build JSON-LD Schema Markup').first().json.post_id }}",
+            "Schema_Types": "={{ $('⚙️ Build JSON-LD Schema Markup').first().json.schema_types.join(', ') }}",
+            "Schemas_Injected": "={{ $('⚙️ Build JSON-LD Schema Markup').first().json.schemas_injected }}",
+            "FAQ_Entries": "={{ $('⚙️ Build JSON-LD Schema Markup').first().json.faq_entries }}",
+            "HowTo_Steps": "={{ $('⚙️ Build JSON-LD Schema Markup').first().json.howto_steps }}",
+            "Status": "Injected"
+          }
+        },
+        "options": {}
+      },
+      "id": "node_log",
+      "name": "📊 Log to Schema_Injection_Log",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [1540, 400]
+    }
+
+  ],
+  "connections": {
+    "🔔 Webhook — Inject Schema (called by WF09A)": { "main": [[{ "node": "📥 Fetch All Published Posts", "type": "main", "index": 0 }]] },
+    "⏰ Daily Schema Audit (3 AM)": { "main": [[{ "node": "📥 Fetch All Published Posts", "type": "main", "index": 0 }]] },
+    "📥 Fetch All Published Posts": { "main": [[{ "node": "⚙️ Detect Schema Types Needed", "type": "main", "index": 0 }]] },
+    "⚙️ Detect Schema Types Needed": { "main": [[{ "node": "⚙️ Build JSON-LD Schema Markup", "type": "main", "index": 0 }]] },
+    "⚙️ Build JSON-LD Schema Markup": { "main": [[{ "node": "✏️ Inject Schema Into WordPress Post", "type": "main", "index": 0 }]] },
+    "✏️ Inject Schema Into WordPress Post": { "main": [[{ "node": "📊 Log to Schema_Injection_Log", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1", "saveManualExecutions": true, "executionTimeout": 600 },
+  "meta": { "description": "WF12A: Schema Markup Injector. Builds and injects Article, FAQPage, HowTo, and BreadcrumbList JSON-LD schemas into all WordPress posts. FAQPage schema is highest-value for Google featured snippets and AI Overview citations. Daily audit patches any posts missing schema. Called by WF09A after every new post." }
+}

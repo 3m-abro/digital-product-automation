@@ -1,0 +1,132 @@
+{
+  "name": "12B — Programmatic SEO Generator (100 Pages)",
+  "nodes": [
+
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "generate-seo-pages",
+        "responseMode": "onReceived",
+        "responseData": "allEntries"
+      },
+      "id": "node_webhook",
+      "name": "🔔 Webhook — Generate SEO Page Batch",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1.1,
+      "position": [200, 400],
+      "notes": "Trigger manually or on schedule. Receives: template_type, batch_size (default 5), product_category. Generates batch_size pages per run to avoid VPS overload. Run 20 batches of 5 = 100 pages."
+    },
+
+    {
+      "parameters": {
+        "jsCode": "const body = $input.first().json.body || $input.first().json;\n\n// Template types available\nconst templates = {\n  'best_for_audience': {\n    title_pattern: 'Best {product_type} for {audience}',\n    slug_pattern: 'best-{product_type_slug}-for-{audience_slug}',\n    intent: 'commercial_investigation',\n    description: 'Targets buyers comparing options for their specific use case'\n  },\n  'audience_tools': {\n    title_pattern: '{audience} Productivity Templates and Tools',\n    slug_pattern: '{audience_slug}-productivity-templates',\n    intent: 'informational',\n    description: 'Broad audience-specific resource pages'\n  },\n  'free_vs_paid': {\n    title_pattern: 'Free vs Paid {product_type}: Which Is Worth It?',\n    slug_pattern: 'free-vs-paid-{product_type_slug}',\n    intent: 'commercial_investigation',\n    description: 'High-intent comparison searches — your paid product wins'\n  },\n  'how_to_choose': {\n    title_pattern: 'How to Choose the Right {product_type} for {use_case}',\n    slug_pattern: 'how-to-choose-{product_type_slug}-{use_case_slug}',\n    intent: 'informational',\n    description: 'Positions you as expert, funnels to product recommendations'\n  }\n};\n\n// Audiences to target\nconst audiences = [\n  'freelancers', 'solopreneurs', 'coaches', 'consultants', 'content creators',\n  'virtual assistants', 'photographers', 'graphic designers', 'copywriters',\n  'social media managers', 'project managers', 'small business owners',\n  'Etsy sellers', 'course creators', 'podcast hosts', 'YouTubers',\n  'real estate agents', 'personal trainers', 'nutritionists', 'therapists'\n];\n\n// Product types\nconst productTypes = [\n  'Notion template', 'productivity planner', 'business template',\n  'content calendar', 'client management system', 'invoice template',\n  'goal tracker', 'habit tracker', 'project planner', 'budget template'\n];\n\n// Use cases\nconst useCases = [\n  'managing clients', 'tracking projects', 'planning content',\n  'running a business', 'staying organized', 'saving time',\n  'growing on social media', 'managing finances'\n];\n\nconst templateType = body.template_type || 'best_for_audience';\nconst batchSize = Math.min(body.batch_size || 5, 10); // Max 10 per run\nconst batchOffset = body.batch_offset || 0;\nconst template = templates[templateType] || templates.best_for_audience;\nconst productCategory = body.product_category || 'productivity templates';\n\n// Generate keyword combinations for this batch\nconst combinations = [];\nfor (const audience of audiences) {\n  for (const productType of productTypes) {\n    combinations.push({ audience, product_type: productType, use_case: useCases[Math.floor(Math.random() * useCases.length)] });\n  }\n}\n\n// Pick the batch\nconst batchItems = combinations.slice(batchOffset, batchOffset + batchSize);\n\nreturn batchItems.map(item => ({\n  json: {\n    template_type: templateType,\n    template_config: template,\n    audience: item.audience,\n    product_type: item.product_type,\n    use_case: item.use_case,\n    product_category: productCategory,\n    page_title: template.title_pattern\n      .replace('{product_type}', item.product_type)\n      .replace('{audience}', item.audience)\n      .replace('{use_case}', item.use_case),\n    page_slug: template.slug_pattern\n      .replace('{product_type_slug}', item.product_type.toLowerCase().replace(/[^a-z0-9]+/g, '-'))\n      .replace('{audience_slug}', item.audience.toLowerCase().replace(/[^a-z0-9]+/g, '-'))\n      .replace('{use_case_slug}', item.use_case.toLowerCase().replace(/[^a-z0-9]+/g, '-')),\n    search_intent: template.intent,\n    brand_url: 'https://clearstackstudio.com',\n    store_url: 'https://clearstackstudio.com/shop',\n    batch_offset: batchOffset\n  }\n}));"
+      },
+      "id": "node_generate_keywords",
+      "name": "⚙️ Generate Keyword Batch",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [460, 400],
+      "notes": "Generates keyword combinations from audience × product type matrices. 20 audiences × 10 product types = 200 possible pages. Run in batches of 5 to avoid VPS overload. Each run produces 5 unique SEO pages."
+    },
+
+    {
+      "parameters": {
+        "model": "llama3",
+        "messages": {
+          "values": [
+            {
+              "role": "system",
+              "content": "You are an expert SEO content writer who creates programmatic landing pages that genuinely help visitors while ranking for specific keyword combinations. Your pages are useful, specific to the audience, and not thin content. Each page must stand alone as a genuinely helpful resource. You understand that programmatic SEO works only when each page has unique, valuable content — not just keyword-swapped templates. Respond in valid JSON only."
+            },
+            {
+              "role": "user",
+              "content": "=Write a complete SEO landing page for this keyword target:\n\nPage Title: {{$json.page_title}}\nTarget Audience: {{$json.audience}}\nProduct Type: {{$json.product_type}}\nSearch Intent: {{$json.search_intent}}\nBrand: ClearStack Studio\nStore URL: {{$json.store_url}}\nSite URL: {{$json.brand_url}}\n\nPage requirements:\n- 800-1200 words (shorter than blog posts — this is a landing page)\n- H1 = page title\n- 3-4 H2 sections specific to this audience\n- Content must be GENUINELY specific to {{$json.audience}} — not generic\n  e.g. if audience is 'freelancers', mention freelance-specific pain points\n- Include a product recommendation section featuring a relevant template\n- 2-3 internal links to blog posts (use [BLOG_LINK: topic] placeholder)\n- Strong CTA section at end linking to store\n- FAQ section (3 questions) — optimized for featured snippets AND AI citations\n  FAQs must be answerable in 40-60 words each (ideal for AI overviews)\n- Page type: {{$json.template_config.description}}\n\nAI CITATION OPTIMIZATION:\n- Include a clear, quotable definition in the first paragraph\n  (AI systems love citing clear definitions)\n- Use declarative, factual statements that AI can excerpt\n- Structure key points as complete sentences that stand alone\n- Include specific numbers/stats where relevant\n\nRespond ONLY with this JSON:\n{\n  \"page_title\": \"H1 title\",\n  \"meta_description\": \"155 char meta description with keyword\",\n  \"focus_keyword\": \"primary keyword phrase\",\n  \"content_html\": \"Complete page HTML — h1, h2, p, ul, li, strong, a tags only\",\n  \"excerpt\": \"2-sentence excerpt\",\n  \"faq_pairs\": [\n    { \"question\": \"Q?\", \"answer\": \"40-60 word answer — complete, standalone, citable\" }\n  ],\n  \"internal_link_suggestions\": [\"topic 1\", \"topic 2\"],\n  \"word_count\": 900\n}"
+            }
+          ]
+        },
+        "options": { "temperature": 0.7 }
+      },
+      "id": "node_llama_page",
+      "name": "🧠 llama3 — Write SEO Landing Page",
+      "type": "n8n-nodes-base.ollama",
+      "typeVersion": 1,
+      "position": [720, 400],
+      "notes": "Writes a unique, audience-specific landing page for each keyword combination. Temp 0.7 — consistent quality but varied enough to avoid duplicate content penalties. ~3-5 min per page on CPU."
+    },
+
+    {
+      "parameters": {
+        "jsCode": "const raw = $input.first().json;\nconst keyword = $('⚙️ Generate Keyword Batch').first().json;\n\nlet pageData;\ntry {\n  const content = raw?.message?.content || raw?.response || '';\n  const match = content.match(/```json\\n?([\\s\\S]*?)\\n?```/) || content.match(/({[\\s\\S]*})/);\n  pageData = JSON.parse((match ? match[1] || match[0] : content).trim());\n} catch(e) {\n  pageData = { error: true, content_html: `<p>Error generating page: ${e.message}</p>` };\n}\n\n// Build FAQPage schema from the FAQ pairs\nconst faqSchema = pageData.faq_pairs?.length ? {\n  '@context': 'https://schema.org',\n  '@type': 'FAQPage',\n  'mainEntity': pageData.faq_pairs.map(q => ({\n    '@type': 'Question',\n    'name': q.question,\n    'acceptedAnswer': { '@type': 'Answer', 'text': q.answer }\n  }))\n} : null;\n\n// Build full page content with schema\nconst schemaHtml = faqSchema \n  ? `<script type=\"application/ld+json\">${JSON.stringify(faqSchema)}</script>\\n`\n  : '';\n\nconst fullContent = schemaHtml + (pageData.content_html || '');\n\n// WordPress page payload\nreturn [{ json: {\n  title: pageData.page_title || keyword.page_title,\n  slug: keyword.page_slug,\n  content: fullContent,\n  excerpt: pageData.excerpt || '',\n  status: 'publish',\n  parent: 0,\n  template: 'seo-landing.php',\n  meta: {\n    _yoast_wpseo_title: pageData.page_title,\n    _yoast_wpseo_metadesc: pageData.meta_description,\n    _yoast_wpseo_focuskw: pageData.focus_keyword,\n    _seo_page_type: 'programmatic',\n    _target_audience: keyword.audience,\n    _target_product: keyword.product_type\n  },\n  keyword_data: keyword,\n  word_count: pageData.word_count || 0,\n  faq_count: pageData.faq_pairs?.length || 0\n}}];"
+      },
+      "id": "node_parse_page",
+      "name": "⚙️ Parse + Build WordPress Page Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [980, 400]
+    },
+
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://clearstackstudio.com/wp-json/wp/v2/pages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "Basic YOUR_WP_BASE64_AUTH" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "body": "={\n  \"title\": \"{{ $json.title }}\",\n  \"slug\": \"{{ $json.slug }}\",\n  \"content\": {{ JSON.stringify($json.content) }},\n  \"excerpt\": \"{{ $json.excerpt }}\",\n  \"status\": \"publish\",\n  \"meta\": {{ JSON.stringify($json.meta) }}\n}",
+        "options": {}
+      },
+      "id": "node_publish_page",
+      "name": "📄 Publish to WordPress as Page",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1240, 400],
+      "notes": "Publishes directly as a WordPress Page (not post). Pages sit at /slug rather than /blog/slug — cleaner URL structure for SEO landing pages. Uses WP Pages API endpoint."
+    },
+
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": { "value": "YOUR_GOOGLE_SHEET_ID_HERE" },
+        "sheetName": { "value": "Programmatic_SEO_Pages" },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Date": "={{ new Date().toISOString().split('T')[0] }}",
+            "Page_Title": "={{ $('⚙️ Parse + Build WordPress Page Payload').first().json.title }}",
+            "Slug": "={{ $('⚙️ Parse + Build WordPress Page Payload').first().json.slug }}",
+            "URL": "={{ 'https://clearstackstudio.com/' + $('⚙️ Parse + Build WordPress Page Payload').first().json.slug }}",
+            "Target_Audience": "={{ $('⚙️ Generate Keyword Batch').first().json.audience }}",
+            "Product_Type": "={{ $('⚙️ Generate Keyword Batch').first().json.product_type }}",
+            "Template_Type": "={{ $('⚙️ Generate Keyword Batch').first().json.template_type }}",
+            "Word_Count": "={{ $('⚙️ Parse + Build WordPress Page Payload').first().json.word_count }}",
+            "FAQ_Count": "={{ $('⚙️ Parse + Build WordPress Page Payload').first().json.faq_count }}",
+            "WP_Page_ID": "={{ $json.id }}",
+            "Status": "Published"
+          }
+        },
+        "options": {}
+      },
+      "id": "node_log",
+      "name": "📊 Log to Programmatic_SEO_Pages",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [1500, 400]
+    }
+
+  ],
+  "connections": {
+    "🔔 Webhook — Generate SEO Page Batch": { "main": [[{ "node": "⚙️ Generate Keyword Batch", "type": "main", "index": 0 }]] },
+    "⚙️ Generate Keyword Batch": { "main": [[{ "node": "🧠 llama3 — Write SEO Landing Page", "type": "main", "index": 0 }]] },
+    "🧠 llama3 — Write SEO Landing Page": { "main": [[{ "node": "⚙️ Parse + Build WordPress Page Payload", "type": "main", "index": 0 }]] },
+    "⚙️ Parse + Build WordPress Page Payload": { "main": [[{ "node": "📄 Publish to WordPress as Page", "type": "main", "index": 0 }]] },
+    "📄 Publish to WordPress as Page": { "main": [[{ "node": "📊 Log to Programmatic_SEO_Pages", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1", "saveManualExecutions": true, "executionTimeout": 3600 },
+  "meta": { "description": "WF12B: Programmatic SEO Generator. Generates audience-specific landing pages from keyword matrices (20 audiences × 10 product types = 200 possible pages). Each page: 800-1200 words, genuinely audience-specific, FAQPage schema, AI citation optimization. Run in batches of 5. 20 runs = 100 indexed pages. Each page targets a long-tail keyword with near-zero competition." }
+}

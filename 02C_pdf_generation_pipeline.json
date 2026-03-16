@@ -1,0 +1,188 @@
+{
+  "name": "02C — PDF Generation Pipeline",
+  "nodes": [
+
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "generate-pdf",
+        "responseMode": "lastNode",
+        "responseData": "allEntries"
+      },
+      "id": "node_webhook",
+      "name": "🔔 Webhook — Generate PDF (called by WF02B)",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1.1,
+      "position": [200, 400],
+      "notes": "Called by WF02B after product content is generated. Receives full product data including content, layout preferences, and brand config. Returns: pdf_url, pdf_filename, page_count."
+    },
+
+    {
+      "parameters": {
+        "jsCode": "const body = $input.first().json.body || $input.first().json;\n\n// Product data from WF02B\nconst product = {\n  id:           body.product_id || `prod_${Date.now()}`,\n  title:        body.title || 'Untitled Product',\n  type:         body.product_type || 'planner',\n  niche:        body.niche || 'productivity',\n  description:  body.description || '',\n  content:      body.content || {},  // structured content from WF02B\n  price:        body.price || '9.99',\n  brand:        'ClearStack Studio',\n  tagline:      'Tools that clear your mind and build your future.',\n  website:      'clearstackstudio.com',\n  // Colors\n  primary_color:   '#1B2A4A',\n  accent_color:    '#C9A84C',\n  text_color:      '#2C2C2C',\n  light_bg:        '#F8F9FA',\n  white:           '#FFFFFF'\n};\n\n// PDF layout templates by product type\nconst layouts = {\n  weekly_planner: {\n    pages: ['cover', 'welcome', 'yearly_overview', 'monthly_x3', 'weekly_x52', 'notes_x5'],\n    orientation: 'portrait',\n    size: 'A4'\n  },\n  daily_planner: {\n    pages: ['cover', 'welcome', 'monthly_x12', 'daily_x365', 'notes_x10'],\n    orientation: 'portrait',\n    size: 'A4'\n  },\n  goal_tracker: {\n    pages: ['cover', 'welcome', 'vision_board_template', 'quarterly_goals_x4', 'monthly_review_x12', 'weekly_checkin_x52', 'notes_x5'],\n    orientation: 'portrait',\n    size: 'A4'\n  },\n  habit_tracker: {\n    pages: ['cover', 'welcome', 'monthly_habits_x12', 'weekly_habits_x52', 'progress_tracker', 'notes_x5'],\n    orientation: 'portrait',\n    size: 'A4'\n  },\n  client_tracker: {\n    pages: ['cover', 'welcome', 'client_roster', 'project_tracker_x20', 'invoice_log', 'meeting_notes_x20'],\n    orientation: 'portrait',\n    size: 'A4'\n  },\n  content_calendar: {\n    pages: ['cover', 'welcome', 'content_strategy', 'monthly_calendar_x12', 'post_planner_x52', 'analytics_tracker'],\n    orientation: 'landscape',\n    size: 'A4'\n  },\n  budget_planner: {\n    pages: ['cover', 'welcome', 'yearly_budget', 'monthly_budget_x12', 'expense_tracker', 'savings_tracker'],\n    orientation: 'portrait',\n    size: 'A4'\n  },\n  generic: {\n    pages: ['cover', 'welcome', 'main_x20', 'notes_x5'],\n    orientation: 'portrait',\n    size: 'A4'\n  }\n};\n\nconst layout = layouts[body.product_type] || layouts.generic;\nconst filename = `${product.id}_${product.title.toLowerCase().replace(/[^a-z0-9]+/g, '-').substring(0, 50)}.pdf`;\n\nreturn [{ json: {\n  product,\n  layout,\n  filename,\n  output_path: `/tmp/pdf_gen/${filename}`,\n  html_path: `/tmp/pdf_gen/${product.id}.html`,\n  _ready: true\n}}];"
+      },
+      "id": "node_prep",
+      "name": "⚙️ Prepare PDF Config",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [460, 400]
+    },
+
+    {
+      "parameters": {
+        "model": "llama3",
+        "messages": {
+          "values": [
+            {
+              "role": "system",
+              "content": "You are a professional PDF planner designer specializing in creating print-ready productivity planners. You generate complete, valid HTML that renders beautifully when converted to PDF via wkhtmltopdf. Your HTML uses only CSS that wkhtmltopdf supports (no flexbox gap, no CSS grid, no modern features — use table-based layout or basic floats/positioning). Every page must have exactly the right dimensions for A4 printing. Your planners are genuinely useful — every field serves a purpose. Brand voice: ClearStack Studio. Tone: professional, clean, minimal. Respond in valid JSON only."
+            },
+            {
+              "role": "user",
+              "content": "=Generate complete HTML for a {{ $json.product.type }} PDF planner.\n\nPRODUCT DETAILS:\nTitle: {{ $json.product.title }}\nDescription: {{ $json.product.description }}\nBrand: {{ $json.product.brand }}\nTagline: {{ $json.product.tagline }}\nWebsite: {{ $json.product.website }}\n\nBRAND COLORS:\nPrimary: {{ $json.product.primary_color }} (navy)\nAccent: {{ $json.product.accent_color }} (gold)\nText: {{ $json.product.text_color }}\n\nLAYOUT PAGES NEEDED: {{ $json.layout.pages.join(', ') }}\nOrientation: {{ $json.layout.orientation }}\nSize: {{ $json.layout.size }}\n\nWKHTMLTOPDF CONSTRAINTS (CRITICAL):\n- A4 portrait: 210mm × 297mm (794px × 1123px at 96dpi)\n- Use @page CSS rule for page dimensions\n- No flexbox gap property (use margin instead)\n- No CSS grid (use table or float)\n- No SVG in CSS backgrounds\n- Font: use Google Fonts @import or system fonts only\n- Page breaks: use page-break-after: always\n- Tables for aligned layouts\n- Print-safe colors only (no rgba with low opacity)\n\nCONTENT REQUIREMENTS:\n- Cover page: product title, brand name, tagline, decorative elements using CSS only\n- Welcome page: brief instructions on how to use the planner (3-5 sentences)\n- Main pages: functional, printable layout with appropriate fields\n  Weekly planner pages need: day columns, time slots, priorities section, notes\n  Monthly pages need: calendar grid, goals, notes\n  Goal tracker pages need: goal, why, milestones, deadline, progress bar placeholder\n- Every page: small brand name + website in footer\n- Page numbers in footer\n\nDESIGN PRINCIPLES:\n- Clean, minimal, professional\n- Generous white space for handwriting\n- Clear visual hierarchy\n- Print-friendly (no dark backgrounds on content pages)\n- Accent color used sparingly for headers and dividers only\n\nRespond ONLY with this JSON:\n{\n  \"html\": \"Complete HTML document from <!DOCTYPE html> to </html>. All CSS inline in <style> tag. No external dependencies except Google Fonts @import.\",\n  \"page_count\": 67,\n  \"pages_breakdown\": [\"Cover\", \"Welcome\", \"52 Weekly pages\", \"12 Monthly pages\", \"5 Notes pages\"],\n  \"design_notes\": \"Brief description of design choices\"\n}"
+            }
+          ]
+        },
+        "options": { "temperature": 0.5, "num_ctx": 8192 }
+      },
+      "id": "node_llama_html",
+      "name": "🧠 llama3 — Generate Planner HTML",
+      "type": "n8n-nodes-base.ollama",
+      "typeVersion": 1,
+      "position": [720, 400],
+      "notes": "llama3 generates complete HTML for the planner. Temperature 0.5 for consistent, clean output. Full 8k context window — planner HTML can be large. Processing time: 8-20 min on CPU VPS. This is the core of the product creation pipeline."
+    },
+
+    {
+      "parameters": {
+        "jsCode": "const raw = $input.first().json;\nconst config = $('⚙️ Prepare PDF Config').first().json;\n\nlet htmlData;\ntry {\n  const content = raw?.message?.content || raw?.response || '';\n  // Extract JSON - handle large responses\n  const jsonMatch = content.match(/```json\\n?([\\s\\S]*?)\\n?```/);\n  const rawJson = jsonMatch ? jsonMatch[1] : content;\n  // Find the JSON object\n  const objMatch = rawJson.match(/{[\\s\\S]*}/);\n  htmlData = JSON.parse(objMatch ? objMatch[0] : rawJson);\n} catch(e) {\n  return [{ json: { error: true, message: `HTML parse failed: ${e.message}`, step: 'parse_html' } }];\n}\n\nif (!htmlData.html || htmlData.html.length < 500) {\n  return [{ json: { error: true, message: 'HTML too short or missing', step: 'validate_html' } }];\n}\n\n// Post-process HTML: inject any missing wkhtmltopdf fixes\nlet html = htmlData.html;\n\n// Ensure proper charset\nif (!html.includes('charset')) {\n  html = html.replace('<head>', '<head><meta charset=\"UTF-8\">');\n}\n\n// Ensure viewport for wkhtmltopdf\nif (!html.includes('@page')) {\n  const pageRule = config.layout.orientation === 'landscape'\n    ? '@page { size: A4 landscape; margin: 15mm; }'\n    : '@page { size: A4 portrait; margin: 15mm; }';\n  html = html.replace('<style>', `<style>\\n${pageRule}\\n`);\n}\n\n// Fix common wkhtmltopdf incompatibility: flexbox gap\nhtml = html.replace(/gap:\\s*[\\d]+px/g, '');\nhtml = html.replace(/column-gap:\\s*[\\d]+px/g, '');\n\nreturn [{ json: {\n  ...config,\n  html_content: html,\n  page_count: htmlData.page_count || 0,\n  pages_breakdown: htmlData.pages_breakdown || [],\n  design_notes: htmlData.design_notes || '',\n  html_size_chars: html.length,\n  _html_ready: true\n}}];"
+      },
+      "id": "node_parse_html",
+      "name": "⚙️ Parse + Fix HTML for wkhtmltopdf",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [980, 400],
+      "notes": "Parses llama3 output, fixes common wkhtmltopdf incompatibilities (flexbox gap, missing @page rule, charset). Validates HTML length before proceeding."
+    },
+
+    {
+      "parameters": {
+        "command": "=# Create output directory\nmkdir -p /tmp/pdf_gen\n\n# Write HTML to temp file\ncat > '{{ $json.html_path }}' << 'HTMLEOF'\n{{ $json.html_content }}\nHMLEOF\n\n# Verify HTML was written\nif [ ! -f '{{ $json.html_path }}' ]; then\n  echo 'ERROR: HTML file not created'\n  exit 1\nfi\n\nhtml_size=$(wc -c < '{{ $json.html_path }}')\necho \"HTML file size: ${html_size} bytes\"\n\nif [ \"$html_size\" -lt 1000 ]; then\n  echo 'ERROR: HTML file too small, generation likely failed'\n  exit 1\nfi\n\necho \"HTML written successfully: {{ $json.html_path }}\""
+      },
+      "id": "node_write_html",
+      "name": "💾 Write HTML to VPS",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [1240, 400],
+      "notes": "Writes the HTML to a temp file on the VPS. Uses heredoc to handle special characters safely."
+    },
+
+    {
+      "parameters": {
+        "command": "=# Convert HTML to PDF using wkhtmltopdf\n# Install if not present: apt-get install -y wkhtmltopdf\n\nORIENTATION=\"{{ $('⚙️ Prepare PDF Config').first().json.layout.orientation }}\"\nHTML_FILE=\"{{ $('⚙️ Parse + Fix HTML for wkhtmltopdf').first().json.html_path }}\"\nPDF_FILE=\"{{ $('⚙️ Parse + Fix HTML for wkhtmltopdf').first().json.output_path }}\"\nPRODUCT_TITLE=\"{{ $('⚙️ Prepare PDF Config').first().json.product.title }}\"\n\necho \"Converting: $HTML_FILE → $PDF_FILE\"\necho \"Orientation: $ORIENTATION\"\n\n# wkhtmltopdf with print-optimized settings\nwkhtmltopdf \\\n  --orientation \"$ORIENTATION\" \\\n  --page-size A4 \\\n  --margin-top 0 \\\n  --margin-right 0 \\\n  --margin-bottom 0 \\\n  --margin-left 0 \\\n  --encoding UTF-8 \\\n  --enable-local-file-access \\\n  --javascript-delay 500 \\\n  --no-background \\\n  --print-media-type \\\n  --dpi 300 \\\n  --image-quality 100 \\\n  --title \"$PRODUCT_TITLE\" \\\n  \"$HTML_FILE\" \\\n  \"$PDF_FILE\" 2>&1\n\n# Check result\nif [ $? -ne 0 ]; then\n  echo 'ERROR: wkhtmltopdf conversion failed'\n  exit 1\nfi\n\nif [ ! -f \"$PDF_FILE\" ]; then\n  echo 'ERROR: PDF file not created'\n  exit 1\nfi\n\nPDF_SIZE=$(wc -c < \"$PDF_FILE\")\necho \"PDF created successfully: $PDF_FILE\"\necho \"PDF size: ${PDF_SIZE} bytes\"\n\n# Get page count\nPAGE_COUNT=$(pdfinfo \"$PDF_FILE\" 2>/dev/null | grep Pages | awk '{print $2}' || echo 'unknown')\necho \"Page count: $PAGE_COUNT\""
+      },
+      "id": "node_convert_pdf",
+      "name": "⚙️ Convert HTML → PDF (wkhtmltopdf)",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [1500, 400],
+      "notes": "Converts HTML to PDF at 300 DPI for print quality. --no-background prevents dark CSS backgrounds from printing. --print-media-type uses @media print CSS rules. Outputs to /tmp/pdf_gen/. Processing time: 10-60 seconds depending on page count."
+    },
+
+    {
+      "parameters": {
+        "command": "=# Upload PDF to Cloudflare R2 (or S3-compatible storage)\n# Install rclone if not present: curl https://rclone.org/install.sh | sudo bash\n# Configure: rclone config → add S3/R2 remote named 'r2'\n\nPDF_FILE=\"{{ $('⚙️ Parse + Fix HTML for wkhtmltopdf').first().json.output_path }}\"\nFILENAME=\"{{ $('⚙️ Prepare PDF Config').first().json.filename }}\"\nPRODUCT_ID=\"{{ $('⚙️ Prepare PDF Config').first().json.product.id }}\"\n\n# Upload to R2/S3 bucket\nrclone copy \\\n  \"$PDF_FILE\" \\\n  \"r2:clearstack-products/pdfs/\" \\\n  --s3-acl public-read 2>&1\n\nif [ $? -ne 0 ]; then\n  echo 'ERROR: Upload failed'\n  # Fallback: serve from local nginx\n  mkdir -p /var/www/clearstack-downloads\n  cp \"$PDF_FILE\" \"/var/www/clearstack-downloads/$FILENAME\"\n  echo \"FALLBACK_URL=https://clearstackstudio.com/downloads/$FILENAME\"\n  exit 0\nfi\n\n# Public URL (Cloudflare R2 public bucket URL)\nPUBLIC_URL=\"https://pub-YOUR_R2_ACCOUNT_ID.r2.dev/pdfs/$FILENAME\"\necho \"UPLOAD_SUCCESS=true\"\necho \"PUBLIC_URL=$PUBLIC_URL\"\necho \"PRODUCT_ID=$PRODUCT_ID\"\necho \"FILENAME=$FILENAME\"\n\n# Clean up HTML temp file\nrm -f \"{{ $('⚙️ Parse + Fix HTML for wkhtmltopdf').first().json.html_path }}\"\necho 'HTML temp file cleaned up'"
+      },
+      "id": "node_upload",
+      "name": "☁️ Upload PDF to R2/S3",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [1760, 400],
+      "notes": "SETUP: (1) Create Cloudflare R2 bucket 'clearstack-products' — free 10GB. (2) Configure rclone with R2 credentials. (3) Replace YOUR_R2_ACCOUNT_ID with your actual Cloudflare account ID. Fallback: serves from local nginx if R2 fails."
+    },
+
+    {
+      "parameters": {
+        "jsCode": "const uploadOutput = $input.first().json.stdout || '';\nconst config = $('⚙️ Parse + Fix HTML for wkhtmltopdf').first().json;\n\n// Parse upload results\nconst urlMatch = uploadOutput.match(/PUBLIC_URL=(.+)/);\nconst successMatch = uploadOutput.includes('UPLOAD_SUCCESS=true');\nconst fallbackMatch = uploadOutput.match(/FALLBACK_URL=(.+)/);\n\nconst pdfUrl = urlMatch ? urlMatch[1].trim() \n             : fallbackMatch ? fallbackMatch[1].trim()\n             : null;\n\nif (!pdfUrl) {\n  return [{ json: { \n    error: true, \n    message: 'PDF URL not found in upload output',\n    upload_output: uploadOutput\n  }}];\n}\n\nconst result = {\n  product_id: config.product.id,\n  product_title: config.product.title,\n  product_type: config.product.type,\n  pdf_url: pdfUrl,\n  pdf_filename: config.filename,\n  pdf_path: config.output_path,\n  page_count: config.page_count,\n  pages_breakdown: config.pages_breakdown,\n  upload_method: successMatch ? 'cloudflare_r2' : 'local_nginx',\n  generated_at: new Date().toISOString(),\n  // Pass through for WF13 (mockup generation)\n  _ready_for_mockup: true,\n  _ready_for_publishing: true\n};\n\nconsole.log(`PDF ready: ${result.pdf_url}`);\nreturn [{ json: result }];"
+      },
+      "id": "node_finalize",
+      "name": "⚙️ Finalize — Extract PDF URL",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2020, 400]
+    },
+
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": { "value": "YOUR_GOOGLE_SHEET_ID_HERE" },
+        "sheetName": { "value": "Generated_PDFs" },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Date": "={{ new Date().toISOString().split('T')[0] }}",
+            "Product_ID": "={{ $json.product_id }}",
+            "Product_Title": "={{ $json.product_title }}",
+            "Product_Type": "={{ $json.product_type }}",
+            "PDF_URL": "={{ $json.pdf_url }}",
+            "Page_Count": "={{ $json.page_count }}",
+            "Upload_Method": "={{ $json.upload_method }}",
+            "Status": "Ready",
+            "Next_Step": "Mockup generation (WF13)"
+          }
+        },
+        "options": {}
+      },
+      "id": "node_log",
+      "name": "📊 Log to Generated_PDFs Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [2280, 280]
+    },
+
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "YOUR_N8N_BASE_URL/webhook/generate-mockups",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [{ "name": "Content-Type", "value": "application/json" }] },
+        "sendBody": true,
+        "contentType": "json",
+        "body": "={{ JSON.stringify($json) }}",
+        "options": { "timeout": 300000 }
+      },
+      "id": "node_trigger_mockup",
+      "name": "🔌 Trigger WF13 — Generate Mockups",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [2280, 520],
+      "notes": "Passes PDF data to WF13 for mockup generation. WF13 creates the Etsy listing images. After WF13 completes, it triggers WF03 for publishing."
+    }
+
+  ],
+  "connections": {
+    "🔔 Webhook — Generate PDF (called by WF02B)": { "main": [[{ "node": "⚙️ Prepare PDF Config", "type": "main", "index": 0 }]] },
+    "⚙️ Prepare PDF Config": { "main": [[{ "node": "🧠 llama3 — Generate Planner HTML", "type": "main", "index": 0 }]] },
+    "🧠 llama3 — Generate Planner HTML": { "main": [[{ "node": "⚙️ Parse + Fix HTML for wkhtmltopdf", "type": "main", "index": 0 }]] },
+    "⚙️ Parse + Fix HTML for wkhtmltopdf": { "main": [[{ "node": "💾 Write HTML to VPS", "type": "main", "index": 0 }]] },
+    "💾 Write HTML to VPS": { "main": [[{ "node": "⚙️ Convert HTML → PDF (wkhtmltopdf)", "type": "main", "index": 0 }]] },
+    "⚙️ Convert HTML → PDF (wkhtmltopdf)": { "main": [[{ "node": "☁️ Upload PDF to R2/S3", "type": "main", "index": 0 }]] },
+    "☁️ Upload PDF to R2/S3": { "main": [[{ "node": "⚙️ Finalize — Extract PDF URL", "type": "main", "index": 0 }]] },
+    "⚙️ Finalize — Extract PDF URL": {
+      "main": [[
+        { "node": "📊 Log to Generated_PDFs Sheet", "type": "main", "index": 0 },
+        { "node": "🔌 Trigger WF13 — Generate Mockups", "type": "main", "index": 0 }
+      ]]
+    }
+  },
+  "settings": { "executionOrder": "v1", "saveManualExecutions": true, "executionTimeout": 3600 },
+  "meta": {
+    "description": "WF02C: PDF Generation Pipeline. Receives product data from WF02B. llama3 generates complete planner HTML. wkhtmltopdf converts to print-quality PDF at 300 DPI. Uploads to Cloudflare R2 (free 10GB). Returns public PDF URL. Triggers WF13 for mockup generation. Supports 7 planner types: weekly, daily, goal tracker, habit tracker, client tracker, content calendar, budget planner.",
+    "vps_setup_required": [
+      "wkhtmltopdf: apt-get install -y wkhtmltopdf",
+      "poppler-utils (pdfinfo): apt-get install -y poppler-utils",
+      "rclone: curl https://rclone.org/install.sh | sudo bash",
+      "rclone config: add remote named 'r2' with Cloudflare R2 credentials"
+    ]
+  }
+}

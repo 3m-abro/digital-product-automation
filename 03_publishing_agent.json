@@ -1,0 +1,620 @@
+{
+  "name": "03 \u2014 Publishing Agent (Gumroad + Etsy + Payhip)",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 4
+            }
+          ]
+        }
+      },
+      "id": "node_pub_trigger",
+      "name": "\u23f0 Check for Products to Publish (Every 4h)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        200,
+        400
+      ],
+      "notes": "Checks every 4 hours for products ready to publish. Runs after Workflow 2 populates Products_Ready."
+    },
+    {
+      "parameters": {
+        "operation": "read",
+        "documentId": {
+          "value": "YOUR_GOOGLE_SHEET_ID_HERE"
+        },
+        "sheetName": {
+          "value": "Products_Ready"
+        },
+        "filtersUI": {
+          "values": [
+            {
+              "lookupColumn": "Status",
+              "lookupValue": "Ready to Publish"
+            },
+            {
+              "lookupColumn": "Published_Gumroad",
+              "lookupValue": "NO"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "node_read_ready",
+      "name": "\ud83d\udcca Read Products Ready to Publish",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [
+        440,
+        400
+      ],
+      "notes": "Reads products with Status='Ready to Publish' that haven't been published yet."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "conditions": [
+            {
+              "leftValue": "={{ $items().length }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ]
+        }
+      },
+      "id": "node_check_products",
+      "name": "\ud83d\udd00 Products Ready?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        700,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.gumroad.com/v2/products",
+        "sendBody": true,
+        "contentType": "form-urlencoded",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "access_token",
+              "value": "YOUR_GUMROAD_ACCESS_TOKEN"
+            },
+            {
+              "name": "name",
+              "value": "={{ $json.Title }}"
+            },
+            {
+              "name": "description",
+              "value": "={{ $json.Short_Description }}"
+            },
+            {
+              "name": "price",
+              "value": "={{ Math.round(parseFloat($json.Price) * 100) }}"
+            },
+            {
+              "name": "tags[]",
+              "value": "={{ $json.Tags.split(', ').slice(0,5).join(',') }}"
+            },
+            {
+              "name": "published",
+              "value": "true"
+            },
+            {
+              "name": "require_shipping",
+              "value": "false"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "node_publish_gumroad",
+      "name": "\ud83d\uded2 Publish to Gumroad",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        960,
+        200
+      ],
+      "notes": "SETUP REQUIRED: Replace YOUR_GUMROAD_ACCESS_TOKEN with your token from gumroad.com/settings/advanced. Creates a new product listing. Price is in cents."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://openapi.etsy.com/v3/application/shops/YOUR_SHOP_ID/listings",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-api-key",
+              "value": "YOUR_ETSY_API_KEY"
+            },
+            {
+              "name": "Authorization",
+              "value": "Bearer YOUR_ETSY_OAUTH_TOKEN"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "body": "={\n  \"quantity\": 999,\n  \"title\": \"{{ $json.Title }}\",\n  \"description\": \"{{ $json.Short_Description }}\",\n  \"price\": {{ $json.Price }},\n  \"who_made\": \"i_did\",\n  \"when_made\": \"made_to_order\",\n  \"taxonomy_id\": 2078,\n  \"type\": \"download\",\n  \"tags\": {{ JSON.stringify($json.Tags.split(', ').slice(0,13)) }},\n  \"shipping_profile_id\": null,\n  \"is_digital\": true,\n  \"file_data\": []\n}",
+        "options": {}
+      },
+      "id": "node_publish_etsy",
+      "name": "\ud83d\uded2 Publish to Etsy",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        960,
+        400
+      ],
+      "notes": "SETUP REQUIRED: Etsy API requires OAuth2 setup. Replace YOUR_SHOP_ID, YOUR_ETSY_API_KEY, YOUR_ETSY_OAUTH_TOKEN. Create app at etsy.com/developers. taxonomy_id 2078 = Digital Downloads."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://payhip.com/api/v1/product",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer YOUR_PAYHIP_API_KEY"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "body": "={\n  \"title\": \"{{ $json.Title }}\",\n  \"description\": \"{{ $json.Short_Description }}\",\n  \"price\": {{ $json.Price }},\n  \"currency\": \"USD\",\n  \"type\": \"digital\",\n  \"tags\": \"{{ $json.Tags.split(', ').slice(0,5).join(',') }}\"\n}",
+        "options": {}
+      },
+      "id": "node_publish_payhip",
+      "name": "\ud83d\uded2 Publish to Payhip",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        960,
+        600
+      ],
+      "notes": "SETUP REQUIRED: Get API key from payhip.com/account/api. Payhip is FREE with 5% transaction fee - great for beginners. No monthly cost."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Collect publishing results from all 3 stores\nconst product = $('\ud83d\udcca Read Products Ready to Publish').first().json;\n\nconst gumroadResult = $('\ud83d\uded2 Publish to Gumroad').first().json;\nconst etsyResult = $('\ud83d\uded2 Publish to Etsy').first().json;\nconst payhipResult = $('\ud83d\uded2 Publish to Payhip').first().json;\n\nconst publishReport = {\n  product_id: product.Product_ID,\n  title: product.Title,\n  published_at: new Date().toISOString(),\n  \n  // Extract URLs from API responses\n  gumroad_url: gumroadResult?.product?.short_url || gumroadResult?.product?.url || 'Check Gumroad Dashboard',\n  gumroad_id: gumroadResult?.product?.id || null,\n  gumroad_success: gumroadResult?.success === true,\n  \n  etsy_listing_id: etsyResult?.listing_id || null,\n  etsy_url: etsyResult?.url || `https://www.etsy.com/listing/${etsyResult?.listing_id}`,\n  etsy_success: !!etsyResult?.listing_id,\n  \n  payhip_url: payhipResult?.data?.link || 'Check Payhip Dashboard',\n  payhip_id: payhipResult?.data?.id || null,\n  payhip_success: !!payhipResult?.data,\n  \n  // Pass through social content for Workflow 4\n  social_content: {\n    ig_caption: product.IG_Caption,\n    fb_post: product.FB_Post,\n    tiktok_script: product.TikTok_Script,\n    pinterest_description: product.Pinterest_Description,\n    youtube_title: product.YouTube_Title,\n    gumroad_url: gumroadResult?.product?.short_url || '',\n    etsy_url: `https://www.etsy.com/listing/${etsyResult?.listing_id}` || '',\n    payhip_url: payhipResult?.data?.link || ''\n  },\n  \n  product_row_data: product\n};\n\nreturn [{ json: publishReport }];"
+      },
+      "id": "node_collect_results",
+      "name": "\ud83d\udce6 Collect Publishing Results",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1240,
+        400
+      ],
+      "notes": "Aggregates results from all 3 store APIs. Extracts product URLs for social media posts."
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "documentId": {
+          "value": "YOUR_GOOGLE_SHEET_ID_HERE"
+        },
+        "sheetName": {
+          "value": "Products_Ready"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Published_Gumroad": "={{ $json.gumroad_success ? 'YES' : 'FAILED' }}",
+            "Published_Etsy": "={{ $json.etsy_success ? 'YES' : 'FAILED' }}",
+            "Published_Payhip": "={{ $json.payhip_success ? 'YES' : 'FAILED' }}",
+            "Status": "Published - Pending Social",
+            "Gumroad_URL": "={{ $json.gumroad_url }}",
+            "Etsy_URL": "={{ $json.etsy_url }}",
+            "Payhip_URL": "={{ $json.payhip_url }}"
+          }
+        },
+        "where": {
+          "values": [
+            {
+              "lookupColumn": "Product_ID",
+              "lookupValue": "={{ $json.product_id }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "node_update_published",
+      "name": "\ud83d\udcca Update Sheet \u2014 Published Status",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [
+        1500,
+        400
+      ],
+      "notes": "Updates the Products_Ready sheet with publish status and store URLs."
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "value": "YOUR_GOOGLE_SHEET_ID_HERE"
+        },
+        "sheetName": {
+          "value": "Published_Products"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Product_ID": "={{ $json.product_id }}",
+            "Title": "={{ $json.title }}",
+            "Published_At": "={{ $json.published_at }}",
+            "Gumroad_URL": "={{ $json.gumroad_url }}",
+            "Etsy_URL": "={{ $json.etsy_url }}",
+            "Payhip_URL": "={{ $json.payhip_url }}",
+            "Social_Posted": "NO",
+            "Total_Sales": "0",
+            "Revenue": "0"
+          }
+        },
+        "options": {}
+      },
+      "id": "node_log_published",
+      "name": "\ud83d\udcca Log to Published_Products Tab",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [
+        1760,
+        400
+      ],
+      "notes": "Creates a permanent record in the Published_Products tracking tab."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "YOUR_N8N_WEBHOOK_URL_FOR_WORKFLOW_4",
+        "sendBody": true,
+        "contentType": "json",
+        "body": "={{ JSON.stringify($json.social_content) }}",
+        "options": {}
+      },
+      "id": "node_trigger_social",
+      "name": "\ud83d\ude80 Trigger Social Media Workflow",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        2020,
+        400
+      ],
+      "notes": "SETUP REQUIRED: Replace YOUR_N8N_WEBHOOK_URL_FOR_WORKFLOW_4 with the webhook URL from Workflow 4. This hands off to the social promotion agent."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Check if WooCommerce is enabled in brand config\n// Called after brand config is fetched (add WF06 call to start of WF03 if not present)\n// For now: reads WC enabled flag from product sheet column\n\nconst product = $('\ud83d\udcca Read Products Ready to Publish').first().json;\n\n// Check if WC is enabled \u2014 reads from brand config or sheet column\n// Sheet column 'WC_Enabled' overrides brand config (for per-product control)\nconst wcEnabledSheet = product.WC_Enabled === 'YES' || product.WC_Enabled === 'true';\nconst wcEnabledGlobal = false; // \u2190 This will be true when Phase 2 begins\n\n// WC is enabled if either the global flag OR per-product flag is set\nconst wcEnabled = wcEnabledGlobal || wcEnabledSheet;\n\n// Build WooCommerce product payload (ready for when enabled)\nconst wcPayload = {\n  name: product.Title,\n  type: 'simple',\n  status: 'publish',\n  featured: false,\n  catalog_visibility: 'visible',\n  description: product.Description_Long || product.Description || '',\n  short_description: (product.Description || '').substring(0, 300),\n  sku: `CSP-${product.Product_ID || Date.now()}`,\n  regular_price: String(product.Price || '9.99'),\n  \n  // Digital product settings\n  virtual: true,\n  downloadable: true,\n  download_limit: -1,      // Unlimited downloads\n  download_expiry: -1,     // Never expire\n  downloads: [\n    {\n      id: `dl-${product.Product_ID}`,\n      name: product.Title,\n      file: product.Drive_Download_URL || ''  // Google Drive public link\n    }\n  ],\n  \n  // SEO + discovery\n  slug: (product.Title || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, ''),\n  tags: (product.Tags || '').split(',').filter(Boolean).map(t => ({ name: t.trim() })),\n  categories: [],  // Will be populated from brand config category_ids\n  \n  // Images (product mockup from creation workflow)\n  images: product.Cover_Image_URL ? [\n    { src: product.Cover_Image_URL, alt: product.Title }\n  ] : [],\n  \n  // Meta for Yoast SEO on product pages\n  meta_data: [\n    { key: '_yoast_wpseo_focuskw', value: (product.Tags || '').split(',')[0]?.trim() || '' },\n    { key: '_yoast_wpseo_metadesc', value: (product.Description || '').substring(0, 155) }\n  ]\n};\n\nreturn [{ json: {\n  wc_enabled: wcEnabled,\n  wc_payload: wcPayload,\n  product_id: product.Product_ID,\n  product_title: product.Title,\n  wc_domain: 'clearstackstudio.com',\n  wc_api_version: 'wc/v3',\n  _wc_prepared: true\n}}];"
+      },
+      "id": "node_wc_check",
+      "name": "\u2699\ufe0f Prep WooCommerce Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1500,
+        580
+      ],
+      "notes": "Prepares the WooCommerce product payload. WooCommerce publishing is DISABLED by default (wc_enabled = false). To activate Phase 2: change wcEnabledGlobal to true AND ensure WC credentials are set in WF06."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "conditions": [
+            {
+              "leftValue": "={{ $json.wc_enabled }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ]
+        }
+      },
+      "id": "node_wc_gate",
+      "name": "\ud83d\udd00 WooCommerce Enabled?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1760,
+        580
+      ],
+      "notes": "Gate node \u2014 only proceeds to WC publish if enabled. When disabled, product data is still prepared and logged, ready for when you flip the switch."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://{{ $json.wc_domain }}/wp-json/{{ $json.wc_api_version }}/products",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Basic YOUR_WC_BASE64_CREDENTIALS"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "body": "={{ JSON.stringify($json.wc_payload) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "node_wc_publish",
+      "name": "\ud83d\uded2 Publish to WooCommerce",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        2020,
+        480
+      ],
+      "notes": "SETUP (Phase 2): (1) Install WooCommerce plugin on WordPress. (2) WP Admin \u2192 WooCommerce \u2192 Settings \u2192 Advanced \u2192 REST API \u2192 Add Key (Read/Write). (3) Base64 encode 'consumer_key:consumer_secret'. (4) Replace YOUR_WC_BASE64_CREDENTIALS. (5) Set wcEnabledGlobal = true in Prep node."
+    },
+    {
+      "parameters": {
+        "jsCode": "// WooCommerce disabled \u2014 log the prepared payload for later\nconst prep = $input.first().json;\nreturn [{ json: {\n  wc_skipped: true,\n  wc_enabled: false,\n  wc_payload_saved: true,\n  product_id: prep.product_id,\n  message: 'WooCommerce disabled (Phase 2). Payload prepared and saved. Flip wcEnabledGlobal=true to activate.',\n  wc_payload: prep.wc_payload\n}}];"
+      },
+      "id": "node_wc_skip",
+      "name": "\u23ed\ufe0f WC Skipped (Phase 2)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2020,
+        680
+      ],
+      "notes": "Runs when WooCommerce is disabled. Saves the prepared payload to the log so you can review it before Phase 2 activation."
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "documentId": {
+          "value": "YOUR_GOOGLE_SHEET_ID_HERE"
+        },
+        "sheetName": {
+          "value": "Published_Products"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "WC_Status": "={{ $json.wc_skipped ? 'PHASE_2_PENDING' : ($json.id ? 'PUBLISHED' : 'FAILED') }}",
+            "WC_Product_ID": "={{ $json.id || '' }}",
+            "WC_Product_URL": "={{ $json.permalink || '' }}",
+            "WC_SKU": "={{ $json.sku || '' }}"
+          }
+        },
+        "where": {
+          "values": [
+            {
+              "lookupColumn": "Product_ID",
+              "lookupValue": "={{ $('\u2699\ufe0f Prep WooCommerce Payload').first().json.product_id }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "node_wc_update_sheet",
+      "name": "\ud83d\udcca Update Sheet \u2014 WC Status",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [
+        2280,
+        580
+      ],
+      "notes": "Updates Published_Products sheet with WooCommerce status. PHASE_2_PENDING = ready to publish once enabled. PUBLISHED = live on WooCommerce."
+    }
+  ],
+  "connections": {
+    "\u23f0 Check for Products to Publish (Every 4h)": {
+      "main": [
+        [
+          {
+            "node": "\ud83d\udcca Read Products Ready to Publish",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "\ud83d\udcca Read Products Ready to Publish": {
+      "main": [
+        [
+          {
+            "node": "\ud83d\udd00 Products Ready?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "\ud83d\udd00 Products Ready?": {
+      "main": [
+        [
+          {
+            "node": "\ud83d\uded2 Publish to Gumroad",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "\ud83d\uded2 Publish to Etsy",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "\ud83d\uded2 Publish to Payhip",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "\ud83d\uded2 Publish to Gumroad": {
+      "main": [
+        [
+          {
+            "node": "\ud83d\udce6 Collect Publishing Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "\ud83d\uded2 Publish to Etsy": {
+      "main": [
+        [
+          {
+            "node": "\ud83d\udce6 Collect Publishing Results",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "\ud83d\uded2 Publish to Payhip": {
+      "main": [
+        [
+          {
+            "node": "\ud83d\udce6 Collect Publishing Results",
+            "type": "main",
+            "index": 2
+          }
+        ]
+      ]
+    },
+    "\ud83d\udce6 Collect Publishing Results": {
+      "main": [
+        [
+          {
+            "node": "\ud83d\udcca Update Sheet \u2014 Published Status",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "\u2699\ufe0f Prep WooCommerce Payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "\ud83d\udcca Update Sheet \u2014 Published Status": {
+      "main": [
+        [
+          {
+            "node": "\ud83d\udcca Log to Published_Products Tab",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "\ud83d\udcca Log to Published_Products Tab": {
+      "main": [
+        [
+          {
+            "node": "\ud83d\ude80 Trigger Social Media Workflow",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "\u2699\ufe0f Prep WooCommerce Payload": {
+      "main": [
+        [
+          {
+            "node": "\ud83d\udd00 WooCommerce Enabled?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "\ud83d\udd00 WooCommerce Enabled?": {
+      "main": [
+        [
+          {
+            "node": "\u23ed\ufe0f WC Skipped (Phase 2)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "\ud83d\uded2 Publish to WooCommerce",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "\ud83d\uded2 Publish to WooCommerce": {
+      "main": [
+        [
+          {
+            "node": "\ud83d\udcca Update Sheet \u2014 WC Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "\u23ed\ufe0f WC Skipped (Phase 2)": {
+      "main": [
+        [
+          {
+            "node": "\ud83d\udcca Update Sheet \u2014 WC Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "\ud83d\udcca Update Sheet \u2014 WC Status": {
+      "main": [
+        [
+          {
+            "node": "\ud83d\ude80 Trigger Social Media Workflow",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true
+  },
+  "meta": {
+    "description": "Phase 3: Publishing agent. Publishes to Gumroad, Etsy, and Payhip simultaneously. Updates Google Sheets with store URLs and triggers social media workflow."
+  }
+}

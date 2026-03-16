@@ -1,0 +1,270 @@
+{
+  "name": "07 — Halal Content Guardian Agent",
+  "nodes": [
+
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "halal-check",
+        "responseMode": "lastNode",
+        "responseData": "allEntries"
+      },
+      "id": "node_webhook_in",
+      "name": "🔔 Webhook — Content to Screen",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1.1,
+      "position": [200, 400],
+      "notes": "Called before ANY content is published. Receives {content, content_type, product_name, brand_id}. Returns {approved, flags, cleaned_content, verdict}."
+    },
+
+    {
+      "parameters": {
+        "jsCode": "// Stage 1: Fast keyword-based pre-screen\n// Catches obvious violations before using Ollama\n\nconst body = $input.first().json.body || $input.first().json;\nconst content = (body.content || '').toLowerCase();\nconst productName = (body.product_name || '').toLowerCase();\nconst contentType = body.content_type || 'general';\nconst brandId = body.brand_id || 'clearstack';\n\n// ── HARD BLOCKED — Auto-reject, never publish ──────────\nconst hardBlocked = [\n  // Financial haram\n  'interest rate', 'riba', 'loan with interest', 'credit card interest',\n  'payday loan', 'forex trading tips', 'crypto get rich', 'gambling',\n  'lottery', 'casino', 'betting', 'sports betting', 'stock tips',\n  // Content haram  \n  'alcohol', 'wine', 'beer', 'spirits', 'cocktail', 'whiskey',\n  'pork', 'bacon', 'ham', 'lard',\n  'adult content', 'nsfw', 'explicit', 'sexual', 'nude', 'erotic',\n  'dating app', 'tinder', 'hookup',\n  'halloween occult', 'witchcraft', 'black magic', 'voodoo', 'ouija',\n  'violence', 'gore', 'weapon promotion',\n  'drug', 'weed', 'cannabis promotion', 'nicotine promotion',\n  'astrology reading', 'horoscope business', 'tarot'\n];\n\n// ── SOFT FLAGS — Need AI review before decision ─────────\nconst softFlags = [\n  'music', 'concert', 'playlist', 'party planning',\n  'valentine', 'romance', 'dating', 'relationship advice',\n  'fashion model', 'lingerie',\n  'investment', 'stock market', 'crypto', 'nft',\n  'insurance', 'mortgage',\n  'halloween', 'christmas secular',\n  'yoga', 'meditation music',\n  'wine tasting template', 'bar menu'\n];\n\n// ── ALWAYS PERMITTED — Fast pass ───────────────────────\nconst alwaysPermitted = [\n  'productivity', 'planner', 'organization', 'business plan',\n  'budget', 'savings', 'halal', 'islamic finance', 'zakah',\n  'education', 'learning', 'study', 'notes',\n  'printable', 'template', 'notion', 'canva',\n  'wellness', 'self care', 'mindfulness', 'gratitude',\n  'goal setting', 'habit tracker', 'journaling',\n  'resume', 'cv', 'invoice', 'proposal',\n  'social media', 'content calendar', 'marketing'\n];\n\n// Run checks\nconst hardBlockFound = hardBlocked.filter(term => content.includes(term) || productName.includes(term));\nconst softFlagFound = softFlags.filter(term => content.includes(term) || productName.includes(term));\nconst permittedFound = alwaysPermitted.filter(term => content.includes(term) || productName.includes(term));\n\nlet preScreenResult = 'NEEDS_AI_REVIEW';\nlet autoDecision = null;\n\nif (hardBlockFound.length > 0) {\n  preScreenResult = 'HARD_BLOCKED';\n  autoDecision = 'REJECTED';\n} else if (permittedFound.length > 0 && softFlagFound.length === 0) {\n  preScreenResult = 'FAST_PASS';\n  autoDecision = 'APPROVED';\n} else {\n  preScreenResult = 'NEEDS_AI_REVIEW';\n  autoDecision = null;\n}\n\nreturn [{ json: {\n  ...body,\n  pre_screen: {\n    result: preScreenResult,\n    auto_decision: autoDecision,\n    hard_blocks_found: hardBlockFound,\n    soft_flags_found: softFlagFound,\n    permitted_terms_found: permittedFound,\n    needs_ai_review: preScreenResult === 'NEEDS_AI_REVIEW'\n  }\n}}];"
+      },
+      "id": "node_prescreen",
+      "name": "⚡ Fast Pre-Screen (Keyword Check)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [460, 400],
+      "notes": "Stage 1: Fast keyword check. Hard-blocked terms = instant reject. Clearly halal content = instant pass. Ambiguous = goes to Ollama for deep review. Saves processing time by not sending obvious cases to Ollama."
+    },
+
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": { "conditions": [{ "leftValue": "={{ $json.pre_screen.result }}", "rightValue": "HARD_BLOCKED", "operator": { "type": "string", "operation": "equals" } }] },
+              "renameOutput": true, "outputKey": "Blocked"
+            },
+            {
+              "conditions": { "conditions": [{ "leftValue": "={{ $json.pre_screen.result }}", "rightValue": "FAST_PASS", "operator": { "type": "string", "operation": "equals" } }] },
+              "renameOutput": true, "outputKey": "Approved"
+            },
+            {
+              "conditions": { "conditions": [{ "leftValue": "={{ $json.pre_screen.result }}", "rightValue": "NEEDS_AI_REVIEW", "operator": { "type": "string", "operation": "equals" } }] },
+              "renameOutput": true, "outputKey": "NeedsReview"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "node_route_screen",
+      "name": "🔀 Route by Pre-Screen Result",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [720, 400],
+      "notes": "Routes: Hard blocked → instant reject node. Fast pass → instant approve node. Needs review → Ollama deep analysis."
+    },
+
+    {
+      "parameters": {
+        "jsCode": "// INSTANT REJECT — hard blocked content\nconst data = $input.first().json;\nreturn [{ json: {\n  approved: false,\n  verdict: 'REJECTED',\n  verdict_source: 'keyword_prescreen',\n  reason: `Hard-blocked haram terms found: ${data.pre_screen.hard_blocks_found.join(', ')}`,\n  flags: data.pre_screen.hard_blocks_found,\n  cleaned_content: null,\n  action_required: 'DISCARD — Do not publish this product',\n  original_content: data.content,\n  product_name: data.product_name,\n  screened_at: new Date().toISOString()\n}}];"
+      },
+      "id": "node_instant_reject",
+      "name": "🚫 Instant Reject",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [980, 200],
+      "notes": "Hard blocked content. Product discarded, logged, and you get notified."
+    },
+
+    {
+      "parameters": {
+        "jsCode": "// INSTANT APPROVE — clearly halal content\nconst data = $input.first().json;\nreturn [{ json: {\n  approved: true,\n  verdict: 'APPROVED',\n  verdict_source: 'keyword_prescreen',\n  reason: 'Content passed halal pre-screen. No flags found.',\n  flags: [],\n  cleaned_content: data.content,\n  action_required: null,\n  original_content: data.content,\n  product_name: data.product_name,\n  screened_at: new Date().toISOString()\n}}];"
+      },
+      "id": "node_instant_approve",
+      "name": "✅ Instant Approve",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [980, 400],
+      "notes": "Clearly halal content. Fast-tracked without using Ollama resources."
+    },
+
+    {
+      "parameters": {
+        "model": "mistral",
+        "messages": {
+          "values": [
+            {
+              "role": "system",
+              "content": "You are a halal content compliance reviewer for a Muslim-owned digital product business. Your job is to review digital product content and determine if it is permissible (halal) to sell and promote.\n\nYou follow mainstream Sunni Islamic principles. You understand:\n- Riba (interest) is haram — any financial content promoting interest-based products is not permitted\n- Content must not promote alcohol, pork, gambling, adult content, black magic/occult, or violence\n- Music is a grey area — flag it for human review rather than outright block unless it is clearly promoting music as a lifestyle\n- Astrology/horoscopes as belief systems are not permitted but 'star-themed' aesthetic art is fine\n- Halloween as a cultural/aesthetic theme (pumpkins, autumn) may be acceptable; occult themes are not\n- Modest fashion templates are fine; provocative fashion is not\n- Regular saving/budgeting content is halal; interest-based financial products are not\n- Business and entrepreneurship content is generally halal\n- You are practical and not overly strict on ambiguous aesthetic matters\n\nAlways respond in valid JSON only."
+            },
+            {
+              "role": "user",
+              "content": "=Review this digital product content for halal compliance:\n\nProduct Name: {{$json.product_name}}\nContent Type: {{$json.content_type}}\nSoft Flags Detected: {{$json.pre_screen.soft_flags_found.join(', ') || 'none'}}\n\nContent to Review:\n{{$json.content}}\n\nProvide a thorough halal compliance review. Respond ONLY with this JSON:\n{\n  \"verdict\": \"APPROVED | REJECTED | NEEDS_HUMAN_REVIEW\",\n  \"confidence\": \"high | medium | low\",\n  \"is_halal\": true,\n  \"issues_found\": [\n    {\n      \"issue\": \"description of issue\",\n      \"severity\": \"critical | moderate | minor\",\n      \"location\": \"where in the content\",\n      \"islamic_basis\": \"brief Islamic reasoning\"\n    }\n  ],\n  \"approved_sections\": [\"sections that are clearly fine\"],\n  \"suggested_edits\": [\n    {\n      \"original\": \"problematic text\",\n      \"suggested\": \"halal alternative\",\n      \"reason\": \"why this change makes it compliant\"\n    }\n  ],\n  \"cleaned_content\": \"The full content with suggested edits applied. If no edits needed, return original content.\",\n  \"reviewer_note\": \"Brief note explaining the overall verdict and any nuances\",\n  \"flag_for_human\": false\n}"
+            }
+          ]
+        },
+        "options": { "temperature": 0.3 }
+      },
+      "id": "node_ollama_halal",
+      "name": "🧠 Ollama Halal Reviewer (mistral)",
+      "type": "n8n-nodes-base.ollama",
+      "typeVersion": 1,
+      "position": [980, 620],
+      "notes": "mistral at low temperature (0.3) for consistent, conservative halal review. Low temp = more predictable, less creative = better for compliance tasks. Reviews ambiguous content flagged by pre-screen."
+    },
+
+    {
+      "parameters": {
+        "jsCode": "// Parse mistral halal review\nconst raw = $input.first().json;\nconst inputData = $('🔀 Route by Pre-Screen Result').first().json;\n\nlet review;\ntry {\n  const content = raw?.message?.content || raw?.response || '';\n  const match = content.match(/```json\\n?([\\s\\S]*?)\\n?```/) || content.match(/({[\\s\\S]*})/);\n  review = JSON.parse((match ? match[1] || match[0] : content).trim());\n} catch(e) {\n  // If parsing fails, flag for human review to be safe\n  review = {\n    verdict: 'NEEDS_HUMAN_REVIEW',\n    confidence: 'low',\n    is_halal: false,\n    issues_found: [{ issue: 'AI review parse error — human review required', severity: 'moderate' }],\n    cleaned_content: inputData.content,\n    flag_for_human: true,\n    reviewer_note: 'Could not parse AI review response. Manual review required.'\n  };\n}\n\n// Map verdict to approved boolean\nconst approved = review.verdict === 'APPROVED';\nconst needsHuman = review.verdict === 'NEEDS_HUMAN_REVIEW' || review.flag_for_human;\n\nreturn [{ json: {\n  approved: approved,\n  needs_human_review: needsHuman,\n  verdict: review.verdict,\n  verdict_source: 'ollama_mistral',\n  confidence: review.confidence,\n  reason: review.reviewer_note,\n  flags: (review.issues_found || []).map(i => i.issue),\n  issues_detail: review.issues_found || [],\n  suggested_edits: review.suggested_edits || [],\n  cleaned_content: review.cleaned_content || inputData.content,\n  flag_for_human: needsHuman,\n  action_required: needsHuman ? 'MANUAL_REVIEW_REQUIRED — Check Halal_Review sheet' : null,\n  original_content: inputData.content,\n  product_name: inputData.product_name,\n  pre_screen: inputData.pre_screen,\n  screened_at: new Date().toISOString()\n}}];"
+      },
+      "id": "node_parse_halal",
+      "name": "⚙️ Parse Halal Review",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1240, 620]
+    },
+
+    {
+      "parameters": {
+        "jsCode": "// Merge all three paths (blocked, approved, ai-reviewed) into single output\nconst allInputs = $input.all();\nconst result = allInputs[0]?.json;\n\n// Add final metadata\nreturn [{ json: {\n  ...result,\n  halal_check_complete: true,\n  checked_at: new Date().toISOString()\n}}];"
+      },
+      "id": "node_merge_results",
+      "name": "🔀 Merge All Verdict Paths",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1500, 400],
+      "notes": "Collects outputs from all 3 paths (instant reject, instant approve, AI review) into single consistent output format."
+    },
+
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": { "value": "YOUR_GOOGLE_SHEET_ID_HERE" },
+        "sheetName": { "value": "Halal_Review_Log" },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Timestamp": "={{ $json.checked_at }}",
+            "Product_Name": "={{ $json.product_name }}",
+            "Verdict": "={{ $json.verdict }}",
+            "Verdict_Source": "={{ $json.verdict_source }}",
+            "Confidence": "={{ $json.confidence }}",
+            "Approved": "={{ $json.approved }}",
+            "Flags": "={{ ($json.flags || []).join(' | ') }}",
+            "Needs_Human_Review": "={{ $json.needs_human_review }}",
+            "Action_Required": "={{ $json.action_required }}",
+            "Reviewer_Note": "={{ $json.reason }}",
+            "Edits_Suggested": "={{ ($json.suggested_edits || []).length }}"
+          }
+        },
+        "options": {}
+      },
+      "id": "node_log_halal",
+      "name": "📊 Log to Halal_Review_Log",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [1760, 400],
+      "notes": "Every content piece gets logged. Creates an auditable halal compliance trail. You can review this log weekly."
+    },
+
+    {
+      "parameters": {
+        "conditions": {
+          "conditions": [{
+            "leftValue": "={{ $json.needs_human_review }}",
+            "rightValue": true,
+            "operator": { "type": "boolean", "operation": "true" }
+          }]
+        }
+      },
+      "id": "node_check_human_needed",
+      "name": "🔀 Needs Human Review?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [2020, 400]
+    },
+
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": { "value": "YOUR_GOOGLE_SHEET_ID_HERE" },
+        "sheetName": { "value": "Halal_Human_Review_Queue" },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Timestamp": "={{ $json.checked_at }}",
+            "Product_Name": "={{ $json.product_name }}",
+            "Flags": "={{ ($json.flags || []).join(' | ') }}",
+            "Issues_Detail": "={{ JSON.stringify($json.issues_detail) }}",
+            "Suggested_Edits": "={{ JSON.stringify($json.suggested_edits) }}",
+            "Original_Content_Preview": "={{ ($json.original_content || '').substring(0, 500) }}",
+            "Cleaned_Content_Preview": "={{ ($json.cleaned_content || '').substring(0, 500) }}",
+            "YOUR_DECISION": "PENDING",
+            "Notes": "",
+            "Reviewer_Note": "={{ $json.reason }}"
+          }
+        },
+        "options": {}
+      },
+      "id": "node_queue_human",
+      "name": "📋 Queue for Human Review",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [2280, 280],
+      "notes": "Ambiguous content goes here. Open the Halal_Human_Review_Queue tab, review the flags and suggested edits, then set YOUR_DECISION to APPROVED or REJECTED."
+    },
+
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json) }}"
+      },
+      "id": "node_respond",
+      "name": "📤 Return Halal Verdict",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [2280, 520],
+      "notes": "Returns verdict to calling workflow. If approved=true, content proceeds to publishing. If approved=false or needs_human_review=true, the calling workflow pauses."
+    }
+
+  ],
+  "connections": {
+    "🔔 Webhook — Content to Screen": {
+      "main": [[{ "node": "⚡ Fast Pre-Screen (Keyword Check)", "type": "main", "index": 0 }]]
+    },
+    "⚡ Fast Pre-Screen (Keyword Check)": {
+      "main": [[{ "node": "🔀 Route by Pre-Screen Result", "type": "main", "index": 0 }]]
+    },
+    "🔀 Route by Pre-Screen Result": {
+      "main": [
+        [{ "node": "🚫 Instant Reject", "type": "main", "index": 0 }],
+        [{ "node": "✅ Instant Approve", "type": "main", "index": 0 }],
+        [{ "node": "🧠 Ollama Halal Reviewer (mistral)", "type": "main", "index": 0 }]
+      ]
+    },
+    "🚫 Instant Reject": {
+      "main": [[{ "node": "🔀 Merge All Verdict Paths", "type": "main", "index": 0 }]]
+    },
+    "✅ Instant Approve": {
+      "main": [[{ "node": "🔀 Merge All Verdict Paths", "type": "main", "index": 0 }]]
+    },
+    "🧠 Ollama Halal Reviewer (mistral)": {
+      "main": [[{ "node": "⚙️ Parse Halal Review", "type": "main", "index": 0 }]]
+    },
+    "⚙️ Parse Halal Review": {
+      "main": [[{ "node": "🔀 Merge All Verdict Paths", "type": "main", "index": 0 }]]
+    },
+    "🔀 Merge All Verdict Paths": {
+      "main": [[{ "node": "📊 Log to Halal_Review_Log", "type": "main", "index": 0 }]]
+    },
+    "📊 Log to Halal_Review_Log": {
+      "main": [[{ "node": "🔀 Needs Human Review?", "type": "main", "index": 0 }]]
+    },
+    "🔀 Needs Human Review?": {
+      "main": [
+        [{ "node": "📤 Return Halal Verdict", "type": "main", "index": 0 }],
+        [{ "node": "📋 Queue for Human Review", "type": "main", "index": 0 }]
+      ]
+    },
+    "📋 Queue for Human Review": {
+      "main": [[{ "node": "📤 Return Halal Verdict", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": { "executionOrder": "v1", "saveManualExecutions": true },
+  "meta": {
+    "description": "Workflow 07: Halal Content Guardian. 3-stage screening: (1) Fast keyword pre-screen — hard blocks instant reject, clearly halal instant approve; (2) Ollama mistral deep review for ambiguous content; (3) Human review queue for uncertain cases. All decisions logged to Google Sheets. Called before any content is published."
+  }
+}

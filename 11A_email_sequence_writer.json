@@ -1,0 +1,228 @@
+{
+  "name": "11A — Email Sequence Writer (llama3)",
+  "nodes": [
+
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "write-email-sequence",
+        "responseMode": "lastNode",
+        "responseData": "allEntries"
+      },
+      "id": "node_webhook",
+      "name": "🔔 Webhook — Write Email Sequence",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1.1,
+      "position": [200, 400],
+      "notes": "Triggered by: WF11B (initial setup), WF03 (post-purchase), WF09A (new blog post), ManyChat webhook (lead magnet). Receives: sequence_type, product data, brand context."
+    },
+
+    {
+      "parameters": {
+        "jsCode": "const body = $input.first().json.body || $input.first().json;\n\n// Valid sequence types\nconst validTypes = ['welcome', 'post_purchase', 'lead_magnet', 'newsletter', 'winback'];\nconst sequenceType = body.sequence_type || 'welcome';\n\nif (!validTypes.includes(sequenceType)) {\n  return [{ json: { error: true, message: `Invalid sequence_type. Valid: ${validTypes.join(', ')}` } }];\n}\n\nreturn [{ json: {\n  sequence_type: sequenceType,\n  brand_name: 'ClearStack Studio',\n  brand_tagline: 'Tools that clear your mind and build your future.',\n  brand_url: 'https://clearstackstudio.com',\n  brand_color: '#1B2A4A',\n  accent_color: '#C9A84C',\n  from_name: 'ClearStack Studio',\n  from_email: 'hello@clearstackstudio.com',\n  reply_to: 'hello@clearstackstudio.com',\n  tone: 'Professional but warm. Like a successful entrepreneur friend. Direct, specific, zero fluff.',\n  forbidden_phrases: ['game-changer', 'leverage', 'synergy', 'crushing it', 'hustle hard', 'delve into', 'in this day and age'],\n  product_name: body.product_name || '',\n  product_url: body.product_url || '',\n  product_price: body.product_price || '',\n  product_description: body.product_description || '',\n  lead_magnet_url: body.lead_magnet_url || 'https://clearstackstudio.com/free',\n  lead_magnet_name: body.lead_magnet_name || 'Free Productivity Starter Kit',\n  subscriber_segment: body.subscriber_segment || 'general',\n  unsubscribe_placeholder: '{{unsubscribe}}',\n  _prepared: true\n}}];"
+      },
+      "id": "node_validate",
+      "name": "⚙️ Validate + Build Email Context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [460, 400]
+    },
+
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            { "conditions": { "conditions": [{ "leftValue": "={{ $json.sequence_type }}", "rightValue": "welcome", "operator": { "type": "string", "operation": "equals" } }] }, "renameOutput": true, "outputKey": "Welcome" },
+            { "conditions": { "conditions": [{ "leftValue": "={{ $json.sequence_type }}", "rightValue": "post_purchase", "operator": { "type": "string", "operation": "equals" } }] }, "renameOutput": true, "outputKey": "PostPurchase" },
+            { "conditions": { "conditions": [{ "leftValue": "={{ $json.sequence_type }}", "rightValue": "lead_magnet", "operator": { "type": "string", "operation": "equals" } }] }, "renameOutput": true, "outputKey": "LeadMagnet" },
+            { "conditions": { "conditions": [{ "leftValue": "={{ $json.sequence_type }}", "rightValue": "newsletter", "operator": { "type": "string", "operation": "equals" } }] }, "renameOutput": true, "outputKey": "Newsletter" }
+          ]
+        },
+        "options": {}
+      },
+      "id": "node_route",
+      "name": "🔀 Route by Sequence Type",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [720, 400]
+    },
+
+    {
+      "parameters": {
+        "model": "llama3",
+        "messages": {
+          "values": [
+            {
+              "role": "system",
+              "content": "You are an expert email copywriter specializing in digital product businesses. You write welcome sequences that build genuine relationships, not just sell. Your emails feel like messages from a real person — specific, warm, occasionally funny, never corporate. You understand that the welcome sequence is the most important emails you'll ever send — they set the relationship tone forever. Every email must have a clear single purpose. Respond in valid JSON only."
+            },
+            {
+              "role": "user",
+              "content": "=Write a complete 6-email welcome sequence for:\n\nBrand: {{$json.brand_name}}\nTagline: {{$json.brand_tagline}}\nWebsite: {{$json.brand_url}}\nTone: {{$json.tone}}\nForbidden phrases: {{$json.forbidden_phrases.join(', ')}}\nLead magnet: {{$json.lead_magnet_name}}\nLead magnet URL: {{$json.lead_magnet_url}}\n\nSequence structure:\n- Email 1 (Day 0): Welcome + deliver lead magnet + set expectations\n- Email 2 (Day 2): Your story — why ClearStack exists, who you are\n- Email 3 (Day 4): Best free resource (tip or blog post)\n- Email 4 (Day 7): First product recommendation (soft sell)\n- Email 5 (Day 10): Social proof + what customers say\n- Email 6 (Day 14): Discount offer (10% off, 48-hour expiry)\n\nRules:\n- Subject lines under 50 chars — curiosity or specificity, never clickbait\n- Preview text (preheader) complements subject, never repeats it\n- Email body: plain conversational English, short paragraphs (2-3 sentences max)\n- One clear CTA per email — never two\n- P.S. lines — use them, they get read\n- No unsubscribe handling needed (Brevo handles it automatically)\n- Sign off as: The ClearStack Team\n\nRespond ONLY with this JSON:\n{\n  \"sequence_name\": \"Welcome Series — ClearStack Studio\",\n  \"emails\": [\n    {\n      \"email_number\": 1,\n      \"send_delay_days\": 0,\n      \"send_delay_hours\": 0,\n      \"purpose\": \"Welcome + lead magnet delivery\",\n      \"subject\": \"Subject line under 50 chars\",\n      \"preview_text\": \"Preheader text under 90 chars\",\n      \"body_html\": \"Complete email HTML using only: <p>, <a>, <strong>, <br>, <ul>, <li>. No tables, no complex layout. Mobile-first.\",\n      \"body_text\": \"Plain text version of the email\",\n      \"cta_text\": \"CTA button text\",\n      \"cta_url\": \"CTA destination URL\",\n      \"ps_line\": \"P.S. line text\"\n    }\n  ]\n}"
+            }
+          ]
+        },
+        "options": { "temperature": 0.78 }
+      },
+      "id": "node_llama_welcome",
+      "name": "🧠 llama3 — Write Welcome Series",
+      "type": "n8n-nodes-base.ollama",
+      "typeVersion": 1,
+      "position": [980, 160],
+      "notes": "Writes 6-email welcome series. Temp 0.78 for warm, natural voice while staying structured. ~8-12 min on CPU VPS."
+    },
+
+    {
+      "parameters": {
+        "model": "llama3",
+        "messages": {
+          "values": [
+            {
+              "role": "system",
+              "content": "You are an expert email copywriter for digital product businesses. You write post-purchase sequences that delight customers, reduce refund requests, generate reviews, and drive repeat purchases. The best post-purchase emails feel like exceptional customer service, not marketing. Respond in valid JSON only."
+            },
+            {
+              "role": "user",
+              "content": "=Write a complete 5-email post-purchase sequence for:\n\nBrand: {{$json.brand_name}}\nProduct: {{$json.product_name}}\nProduct URL: {{$json.product_url}}\nProduct Price: ${{$json.product_price}}\nTone: {{$json.tone}}\nWebsite: {{$json.brand_url}}\n\nSequence structure:\n- Email 1 (Day 0, immediate): Purchase confirmation + download link + how to access\n- Email 2 (Day 1): Quick-start guide — how to get the most from this product in 10 minutes\n- Email 3 (Day 3): Related product suggestion (upsell — soft, helpful framing)\n- Email 4 (Day 7): Review request — ask for Etsy/Google review (friendly, no pressure)\n- Email 5 (Day 14): Exclusive returning customer offer — 15% off next purchase\n\nRules:\n- Email 1 must include the download link prominently\n- Email 4 review request: make it easy, provide direct link, explain why it helps\n- Never be pushy — these are customers who already trust you\n- Specific to the product — not generic 'digital product' copy\n\nRespond ONLY with this JSON (same structure as welcome series):\n{\n  \"sequence_name\": \"Post-Purchase — [product name]\",\n  \"emails\": [ { \"email_number\": 1, \"send_delay_days\": 0, \"send_delay_hours\": 0, \"purpose\": \"...\", \"subject\": \"...\", \"preview_text\": \"...\", \"body_html\": \"...\", \"body_text\": \"...\", \"cta_text\": \"...\", \"cta_url\": \"...\", \"ps_line\": \"...\" } ]\n}"
+            }
+          ]
+        },
+        "options": { "temperature": 0.75 }
+      },
+      "id": "node_llama_purchase",
+      "name": "🧠 llama3 — Write Post-Purchase Series",
+      "type": "n8n-nodes-base.ollama",
+      "typeVersion": 1,
+      "position": [980, 340],
+      "notes": "Product-specific post-purchase sequence. Triggered by WF03 after every sale — passes product_name, product_url, product_price."
+    },
+
+    {
+      "parameters": {
+        "model": "mistral",
+        "messages": {
+          "values": [
+            {
+              "role": "system",
+              "content": "You write short, punchy lead magnet delivery sequences. 3 emails that deliver value, build trust, and naturally lead to a paid product — without feeling like a funnel. Respond in valid JSON only."
+            },
+            {
+              "role": "user",
+              "content": "=Write a 3-email lead magnet delivery sequence for:\n\nBrand: {{$json.brand_name}}\nLead magnet: {{$json.lead_magnet_name}}\nLead magnet URL: {{$json.lead_magnet_url}}\nRelated paid product: {{$json.product_name || 'productivity templates'}}\nProduct URL: {{$json.product_url || $json.brand_url}}\nTone: {{$json.tone}}\n\nSequence:\n- Email 1 (Day 0): Deliver the freebie + one quick win they can get immediately\n- Email 2 (Day 2): Related tip that builds on the freebie (pure value, no sell)\n- Email 3 (Day 5): Natural bridge from freebie → paid product (helpful, not pushy)\n\nRespond ONLY with this JSON:\n{\n  \"sequence_name\": \"Lead Magnet — [freebie name]\",\n  \"emails\": [ { \"email_number\": 1, \"send_delay_days\": 0, \"send_delay_hours\": 0, \"purpose\": \"...\", \"subject\": \"...\", \"preview_text\": \"...\", \"body_html\": \"...\", \"body_text\": \"...\", \"cta_text\": \"...\", \"cta_url\": \"...\", \"ps_line\": \"...\" } ]\n}"
+            }
+          ]
+        },
+        "options": { "temperature": 0.8 }
+      },
+      "id": "node_mistral_leadmagnet",
+      "name": "🧠 mistral — Write Lead Magnet Series",
+      "type": "n8n-nodes-base.ollama",
+      "typeVersion": 1,
+      "position": [980, 520],
+      "notes": "Short 3-email freebie delivery sequence. Uses mistral for punchy, concise copy — better than llama3 for short-form emails."
+    },
+
+    {
+      "parameters": {
+        "model": "llama3",
+        "messages": {
+          "values": [
+            {
+              "role": "system",
+              "content": "You write weekly email newsletters for a productivity/digital products brand. Your newsletters are genuinely useful — readers look forward to them. Each newsletter has exactly 4 sections: one actionable tip, one product spotlight, one blog post link, one community win or insight. Total reading time: under 3 minutes. Never filler. Every line earns its place. Respond in valid JSON only."
+            },
+            {
+              "role": "user",
+              "content": "=Write this week's newsletter for {{$json.brand_name}}.\n\nDate: {{new Date().toLocaleDateString('en-US', {weekday:'long', month:'long', day:'numeric'})}}\nBrand URL: {{$json.brand_url}}\nTone: {{$json.tone}}\nContext: {{$json.product_name ? 'Featured product this week: ' + $json.product_name + ' — ' + $json.product_url : 'No specific product featured — focus on value content'}}\n\nNewsletter structure:\n1. SUBJECT LINE — specific, curiosity-driven, under 50 chars\n2. GREETING — warm, personal, 1 sentence\n3. TIP OF THE WEEK — one genuinely useful productivity tip (150 words max)\n   Must be immediately actionable. Real and specific.\n4. PRODUCT SPOTLIGHT — if product provided, feature it naturally (100 words)\n   If no product: skip this section\n5. FROM THE BLOG — tease a blog post with a compelling headline + 2-sentence summary\n   Link: {{$json.brand_url}}/blog\n6. COMMUNITY WIN — share a fictional-but-realistic customer success story (80 words)\n   Makes readers feel they're part of something\n7. SIGN OFF — warm, brief, human\n8. P.S. — always a question that invites reply (builds deliverability)\n\nRespond ONLY with this JSON:\n{\n  \"newsletter_date\": \"date string\",\n  \"subject\": \"subject line\",\n  \"preview_text\": \"preheader\",\n  \"body_html\": \"Full newsletter HTML\",\n  \"body_text\": \"Plain text version\",\n  \"tip_summary\": \"1-sentence tip summary for social sharing\",\n  \"send_immediately\": true\n}"
+            }
+          ]
+        },
+        "options": { "temperature": 0.82 }
+      },
+      "id": "node_llama_newsletter",
+      "name": "🧠 llama3 — Write Weekly Newsletter",
+      "type": "n8n-nodes-base.ollama",
+      "typeVersion": 1,
+      "position": [980, 700],
+      "notes": "Weekly newsletter writer. Called by WF11C every Thursday at 9 AM. Passes latest product from WF03 as featured spotlight. Higher temp (0.82) for fresh, varied content each week."
+    },
+
+    {
+      "parameters": {
+        "jsCode": "// Universal parser for all sequence types\nconst raw = $input.first().json;\nconst context = $('⚙️ Validate + Build Email Context').first().json;\n\nlet sequenceData;\ntry {\n  const content = raw?.message?.content || raw?.response || '';\n  const match = content.match(/```json\\n?([\\s\\S]*?)\\n?```/) || content.match(/({[\\s\\S]*})/);\n  sequenceData = JSON.parse((match ? match[1] || match[0] : content).trim());\n} catch(e) {\n  sequenceData = { error: true, message: e.message, emails: [] };\n}\n\nconst emails = sequenceData.emails || (sequenceData.send_immediately ? [sequenceData] : []);\n\n// Build Brevo-compatible email objects\nconst brevoEmails = emails.map((email, i) => {\n  // Wrap body in full branded HTML template\n  const fullHtml = `<!DOCTYPE html>\n<html>\n<head><meta charset=\"UTF-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\n<style>\n  body{margin:0;padding:0;background:#f4f4f4;font-family:Arial,sans-serif;}\n  .wrapper{max-width:600px;margin:0 auto;background:#ffffff;}\n  .header{background:linear-gradient(135deg,#1B2A4A,#2D4A7A);padding:28px 32px;}\n  .header h1{color:white;margin:0;font-size:20px;font-weight:700;}\n  .header p{color:rgba(255,255,255,0.7);margin:4px 0 0;font-size:13px;}\n  .accent-bar{height:4px;background:#C9A84C;}\n  .body{padding:32px;}\n  .body p{color:#333;font-size:15px;line-height:1.7;margin:0 0 16px;}\n  .body a{color:#1B2A4A;}\n  .body strong{color:#1B2A4A;}\n  .cta-wrap{text-align:center;margin:28px 0;}\n  .cta{background:#1B2A4A;color:white!important;padding:14px 32px;border-radius:6px;text-decoration:none;font-weight:700;font-size:15px;display:inline-block;}\n  .ps{color:#666;font-size:13px;border-top:1px solid #eee;padding-top:16px;margin-top:24px;}\n  .footer{background:#f4f4f4;padding:20px 32px;text-align:center;}\n  .footer p{color:#999;font-size:12px;margin:4px 0;}\n  .footer a{color:#999;}\n  ul{padding-left:20px;} li{margin:8px 0;font-size:15px;color:#333;line-height:1.6;}\n</style>\n</head>\n<body>\n<div class=\"wrapper\">\n  <div class=\"header\">\n    <h1>${context.brand_name}</h1>\n    <p>${context.brand_tagline}</p>\n  </div>\n  <div class=\"accent-bar\"></div>\n  <div class=\"body\">\n    ${email.body_html || ''}\n    ${email.cta_url ? `<div class=\"cta-wrap\"><a class=\"cta\" href=\"${email.cta_url}\">${email.cta_text || 'View Now'}</a></div>` : ''}\n    ${email.ps_line ? `<div class=\"ps\">P.S. ${email.ps_line}</div>` : ''}\n  </div>\n  <div class=\"footer\">\n    <p>${context.brand_name} · <a href=\"${context.brand_url}\">${context.brand_url.replace('https://', '')}</a></p>\n    <p><a href=\"${context.unsubscribe_placeholder}\">Unsubscribe</a></p>\n  </div>\n</div>\n</body></html>`;\n\n  return {\n    email_number: email.email_number || i + 1,\n    send_delay_days: email.send_delay_days || 0,\n    send_delay_hours: email.send_delay_hours || 0,\n    subject: email.subject || `Email from ${context.brand_name}`,\n    preview_text: email.preview_text || '',\n    html_content: fullHtml,\n    text_content: email.body_text || email.body_html?.replace(/<[^>]+>/g, '') || '',\n    purpose: email.purpose || '',\n    cta_text: email.cta_text || '',\n    cta_url: email.cta_url || ''\n  };\n});\n\nreturn [{ json: {\n  sequence_type: context.sequence_type,\n  sequence_name: sequenceData.sequence_name || `${context.sequence_type} sequence`,\n  email_count: brevoEmails.length,\n  emails: brevoEmails,\n  product_name: context.product_name,\n  send_immediately: sequenceData.send_immediately || false,\n  _ready_for_brevo: true\n}}];"
+      },
+      "id": "node_parse_build",
+      "name": "⚙️ Parse + Build Branded Email HTML",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1300, 430],
+      "notes": "Parses llama3/mistral output, wraps each email in the ClearStack branded HTML template (navy header, gold accent bar, CTA button, footer with unsubscribe). Outputs Brevo-ready objects."
+    },
+
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "YOUR_N8N_BASE_URL/webhook/brevo-create-sequence",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [{ "name": "Content-Type", "value": "application/json" }] },
+        "sendBody": true,
+        "contentType": "json",
+        "body": "={{ JSON.stringify($json) }}",
+        "options": { "timeout": 30000 }
+      },
+      "id": "node_send_to_brevo",
+      "name": "🔌 Send to WF11B (Brevo Builder)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1560, 430],
+      "notes": "Passes complete sequence data to WF11B which creates the automation in Brevo via API."
+    },
+
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": { "value": "YOUR_GOOGLE_SHEET_ID_HERE" },
+        "sheetName": { "value": "Email_Sequences_Log" },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Date": "={{ new Date().toISOString().split('T')[0] }}",
+            "Sequence_Type": "={{ $json.sequence_type }}",
+            "Sequence_Name": "={{ $json.sequence_name }}",
+            "Email_Count": "={{ $json.email_count }}",
+            "Product": "={{ $json.product_name || 'N/A' }}",
+            "Status": "Written — Sent to Brevo",
+            "Brevo_Automation_ID": "={{ $json.brevo_automation_id || 'Pending' }}"
+          }
+        },
+        "options": {}
+      },
+      "id": "node_log",
+      "name": "📊 Log to Email_Sequences_Log",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [1820, 430]
+    }
+
+  ],
+  "connections": {
+    "🔔 Webhook — Write Email Sequence": { "main": [[{ "node": "⚙️ Validate + Build Email Context", "type": "main", "index": 0 }]] },
+    "⚙️ Validate + Build Email Context": { "main": [[{ "node": "🔀 Route by Sequence Type", "type": "main", "index": 0 }]] },
+    "🔀 Route by Sequence Type": {
+      "main": [
+        [{ "node": "🧠 llama3 — Write Welcome Series", "type": "main", "index": 0 }],
+        [{ "node": "🧠 llama3 — Write Post-Purchase Series", "type": "main", "index": 0 }],
+        [{ "node": "🧠 mistral — Write Lead Magnet Series", "type": "main", "index": 0 }],
+        [{ "node": "🧠 llama3 — Write Weekly Newsletter", "type": "main", "index": 0 }]
+      ]
+    },
+    "🧠 llama3 — Write Welcome Series": { "main": [[{ "node": "⚙️ Parse + Build Branded Email HTML", "type": "main", "index": 0 }]] },
+    "🧠 llama3 — Write Post-Purchase Series": { "main": [[{ "node": "⚙️ Parse + Build Branded Email HTML", "type": "main", "index": 0 }]] },
+    "🧠 mistral — Write Lead Magnet Series": { "main": [[{ "node": "⚙️ Parse + Build Branded Email HTML", "type": "main", "index": 0 }]] },
+    "🧠 llama3 — Write Weekly Newsletter": { "main": [[{ "node": "⚙️ Parse + Build Branded Email HTML", "type": "main", "index": 0 }]] },
+    "⚙️ Parse + Build Branded Email HTML": { "main": [[{ "node": "🔌 Send to WF11B (Brevo Builder)", "type": "main", "index": 0 }]] },
+    "🔌 Send to WF11B (Brevo Builder)": { "main": [[{ "node": "📊 Log to Email_Sequences_Log", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1", "saveManualExecutions": true, "executionTimeout": 1800 },
+  "meta": { "description": "WF11A: Email Sequence Writer. llama3/mistral writes all 4 sequence types (welcome 6-email, post-purchase 5-email, lead magnet 3-email, weekly newsletter). Wraps in branded HTML template. Passes to WF11B for Brevo API creation." }
+}
