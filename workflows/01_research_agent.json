@@ -256,3 +256,4 @@
     "description": "Phase 1: Weekly research agent. Scrapes Etsy, Gumroad, Creative Fabrica. Uses Mistral via Ollama to identify top 8 trending digital product opportunities. Writes results to Google Sheets for human approval."
   }
 }
+

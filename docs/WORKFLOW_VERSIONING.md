@@ -1,14 +1,16 @@
 # Workflow versioning — Git export and tag strategy
 
-n8n workflows in this repo are stored as JSON files at the repo root. This doc describes how to version them so future work can implement a repeatable process.
+n8n workflows in this repo are stored as JSON files in **`workflows/`**. This doc describes how to version them so future work can implement a repeatable process.
 
 ---
 
 ## Current state
 
-- Workflow definitions live as **exported JSON** (e.g. `01_research_agent.json`, `03_publishing_agent.json`).
+- Workflow definitions live as **exported JSON** in **`workflows/`** (e.g. `workflows/01_research_agent.json`). Helper scripts in **`scripts/`** (e.g. `scripts/fix_n8n_connections.js`).
 - There is **no automated sync** between n8n and this repo; exports are manual.
 - GAP_AUDIT_STATUS marks “No workflow versioning (Git)” as OPEN.
+
+**Baseline:** First export/tag (Phase 0 baseline): TBD until first tag. When you tag, use e.g. `workflows-YYYY-MM-DD` and record here.
 
 ---
 
@@ -17,7 +19,7 @@ n8n workflows in this repo are stored as JSON files at the repo root. This doc d
 ### 1. Export from n8n
 
 - In n8n: Workflow → menu (⋮) → **Download** (or Export).
-- Save to repo root with the existing naming (e.g. `03_publishing_agent.json`).
+- Save into **`workflows/`** with the existing naming (e.g. `workflows/03_publishing_agent.json`).
 - **Do not commit secrets:** Use n8n credential references; no API keys in JSON (see SECURITY_CREDENTIALS_FIX.md and CREDENTIALS_AUDIT.md).
 
 ### 2. Private Git repo
@@ -42,7 +44,7 @@ git push origin workflows-2025-03-16
 
 - Clone repo → import each JSON via n8n “Import from File.”
 - Recreate credentials in n8n (no keys in JSON).
-- If webhook base URL differs, run or adapt `fix_n8n_connections.js` (see repo root).
+- If webhook base URL differs, run or adapt **`scripts/fix_n8n_connections.js`**.
 
 ---
 
